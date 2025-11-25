@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Spotify Representative Liked Songs Sampler</title>
+</head>
+<body>
+  <h1>Spotify Representative Liked Songs Sampler</h1>
+
+  {% if not logged_in %}
+    <p>You are not logged in to Spotify.</p>
+    <a href="{{ url_for('login') }}">Log in with Spotify</a>
+  {% else %}
+    <p>You are logged in. Create a playlist:</p>
+    <form method="POST" action="{{ url_for('create_playlist_route') }}">
+      <label>
+        Keywords (comma-separated):<br />
+        <input type="text" name="keywords" placeholder="jazz, fusion, bluegrass" size="40" />
+      </label>
+      <br /><br />
+      <label>
+        Desired number of tracks:<br />
+        <input type="number" name="num_tracks" value="1000" min="1" max="10000" />
+      </label>
+      <br /><br />
+      <label>
+        Playlist name (optional):<br />
+        <input type="text" name="playlist_name" placeholder="My Bluegrass Jazz Fusion Playlist" size="40" />
+      </label>
+      <br /><br />
+      <button type="submit">Create playlist</button>
+    </form>
+  {% endif %}
+
+  {% if message %}
+    <p style="margin-top: 20px;"><strong>{{ message }}</strong></p>
+  {% endif %}
+
+  {% if playlist_url %}
+    <p>Open playlist: <a href="{{ playlist_url }}" target="_blank">{{ playlist_url }}</a></p>
+  {% endif %}
+
+  {% if show_download %}
+    <p>
+      <a href="{{ url_for('download_csv') }}">Download CSV of selected tracks</a>
+    </p>
+  {% endif %}
+
+  {% if tracks and filtered_count is not none %}
+    <hr />
+    <h2>Results</h2>
+    <p>
+      Matching tracks: <strong>{{ filtered_count }}</strong><br />
+      Tracks used in playlist: <strong>{{ selected_count }}</strong>
+    </p>
+
+    <table border="1" cellspacing="0" cellpadding="4">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Name</th>
+          <th>Artists</th>
+          <th>Album</th>
+          <th>Year</th>
+          <th>Genres</th>
+          <th>Spotify Link</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tracks %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ t.name }}</td>
+            <td>{{ t.artists | join(', ') }}</td>
+            <td>{{ t.album }}</td>
+            <td>{{ t.release_year }}</td>
+            <td>{{ t.genres | join(', ') }}</td>
+            <td>
+              <a href="{{ t.url }}" target="_blank">Open</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</body>
+</html>
