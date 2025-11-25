@@ -19,13 +19,13 @@ SCOPE = "user-library-read playlist-modify-private playlist-modify-public"
 
 
 def get_spotify_oauth():
-    """Create a SpotifyOAuth object with our settings."""
     return SpotifyOAuth(
         client_id=CLIENT_ID,
         client_secret=CLIENT_SECRET,
         redirect_uri=REDIRECT_URI,
         scope=SCOPE,
-        show_dialog=True,   # forces Spotify to show the consent screen each time
+        show_dialog=True,
+        open_browser=False
     )
 
 
