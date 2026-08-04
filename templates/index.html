@@ -1,187 +1,184 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Spotify Representative Sampler</title>
-
-  <!-- Bootstrap 5 -->
-  <link 
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" 
-    rel="stylesheet">
-
-  <!-- Google Font -->
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
-
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spotify Discovery Lab</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body {
-      font-family: 'Inter', sans-serif;
-      background: linear-gradient(135deg, #1db954 0%, #191414 100%);
-      color: #fff;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 40px 10px;
-    }
-
-    .card {
-      border-radius: 16px;
-      box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-      background: #f8f9fa;
-      color: #333;
-    }
-
-    .heading {
-      font-weight: 700;
-      text-align: center;
-      margin-bottom: 20px;
-      color: #ffffff;
-      text-shadow: 0 2px 8px rgba(0,0,0,0.25);
-    }
-
-    .logo-circle {
-      width: 90px;
-      height: 90px;
-      border-radius: 50%;
-      background: #1db954;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin: 0 auto 15px auto;
-      box-shadow: 0 6px 20px rgba(0,0,0,0.3);
-    }
-
-    .spotify-icon {
-      font-size: 48px;
-      color: white;
-    }
-
-    table thead {
-      background: #1db954;
-      color: white;
-    }
-
-    a {
-      text-decoration: none;
-    }
+    :root { --spotify: #1ed760; --ink: #101311; --muted: #667069; }
+    body { min-height: 100vh; background: #f3f6f3; color: var(--ink); }
+    .hero { background: radial-gradient(circle at 80% 0, #2f8b51, #101311 55%); color: white; padding: 4rem 0 7rem; }
+    .eyebrow { color: var(--spotify); font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    .app-grid { margin-top: -4rem; }
+    .applet { border: 0; border-radius: 1.25rem; box-shadow: 0 18px 50px rgba(20, 35, 25, .12); }
+    .applet-number { width: 2rem; height: 2rem; display: inline-grid; place-items: center; border-radius: 50%; background: #dcfce7; color: #126232; font-weight: 700; }
+    .form-label { font-weight: 650; }
+    .form-text { color: var(--muted); }
+    .btn-spotify { background: var(--spotify); color: #08170d; font-weight: 700; }
+    .btn-spotify:hover { background: #18bd52; color: #08170d; }
+    .result-card { border-radius: 1rem; border: 1px solid #dce4de; }
+    th { white-space: nowrap; }
   </style>
 </head>
-
 <body>
-
-<div class="container" style="max-width: 850px;">
-  
-  <h1 class="heading">Spotify Representative Playlist Generator</h1>
-
-  <div class="logo-circle">
-    <span class="spotify-icon">🎵</span>
-  </div>
-
-  {% if not logged_in %}
-
-    <div class="text-center">
-      <p class="fs-4">Log in to begin sampling your liked songs playlist</p>
-      <a href="{{ url_for('login') }}" class="btn btn-success btn-lg">
-        Log in with Spotify
-      </a>
+  <header class="hero">
+    <div class="container">
+      <div class="eyebrow mb-2">Spotify Discovery Lab</div>
+      <h1 class="display-5 fw-bold">Build a playlist or uncover something unexpected.</h1>
+      <p class="lead mb-0 text-white-50">Choose where to search, shape the result, and open it directly in Spotify.</p>
     </div>
+  </header>
 
-  {% else %}
-
-    <div class="card p-4 mt-3">
-      <h3 class="text-center mb-3">Create a Playlist</h3>
-
-      <form method="POST" action="{{ url_for('create_playlist_route') }}">
-
-        <div class="mb-3">
-          <label class="form-label fw-semibold">Keywords (comma-separated)</label>
-          <input type="text" name="keywords" class="form-control" placeholder="jazz, fusion, metal" required>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label fw-semibold">Desired Number of Tracks</label>
-          <input type="number" name="num_tracks" class="form-control" min="1" value="30" required>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label fw-semibold">Playlist Name (optional)</label>
-          <input type="text" name="playlist_name" class="form-control" placeholder="My Jazz Fusion Sampler">
-        </div>
-
-        <div class="text-center">
-          <button type="submit" class="btn btn-dark btn-lg">
-            Generate Playlist
-          </button>
-        </div>
-
-      </form>
-    </div>
-
-  {% endif %}
-
-  {% if message %}
-    <div class="alert alert-info text-center mt-4 fs-5">
-      {{ message }}
-    </div>
-  {% endif %}
-
-  {% if playlist_url %}
-    <div class="text-center mt-3">
-      <a href="{{ playlist_url }}" target="_blank" class="btn btn-success btn-lg">
-        Open Playlist on Spotify
-      </a>
-    </div>
-  {% endif %}
-
-  {% if show_download %}
-    <div class="text-center mt-3">
-      <a href="{{ url_for('download_csv') }}" class="btn btn-outline-dark">
-        Download CSV of Selected Tracks
-      </a>
-    </div>
-  {% endif %}
-
-  {% if tracks %}
-    <div class="card p-3 mt-4">
-      <h4 class="text-center mb-3">Playlist Contents</h4>
-
-      <p class="text-center mb-2">
-        Found <strong>{{ filtered_count }}</strong> matching tracks<br>
-        Used <strong>{{ selected_count }}</strong> tracks in playlist
-      </p>
-
-      <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
-        <table class="table table-striped table-bordered">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Name</th>
-              <th>Artists</th>
-              <th>Album</th>
-              <th>Year</th>
-              <th>Genres</th>
-              <th>Link</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for t in tracks %}
-              <tr>
-                <td>{{ loop.index }}</td>
-                <td>{{ t.name }}</td>
-                <td>{{ t.artists | join(', ') }}</td>
-                <td>{{ t.album }}</td>
-                <td>{{ t.release_year }}</td>
-                <td>{{ t.genres | join(', ') }}</td>
-                <td><a href="{{ t.url }}" target="_blank">Open</a></td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+  <main class="container app-grid pb-5">
+    {% if not logged_in %}
+      <div class="card applet p-4 p-md-5 text-center">
+        <h2 class="h3">Connect your Spotify account</h2>
+        <p class="text-secondary">This lets the app read your Liked Songs and create private playlists for you.</p>
+        <a href="{{ url_for('login') }}" class="btn btn-spotify btn-lg">Log in with Spotify</a>
       </div>
-    </div>
-  {% endif %}
+    {% else %}
+      {% if error %}<div class="alert alert-warning shadow-sm" role="alert">{{ error }}</div>{% endif %}
+      {% if message %}<div class="alert alert-success shadow-sm" role="status">{{ message }}</div>{% endif %}
 
-</div>
+      <div class="row g-4">
+        <section class="col-lg-7">
+          <div class="card applet h-100 p-4">
+            <div class="d-flex align-items-center gap-2 mb-3">
+              <span class="applet-number">1</span><h2 class="h4 mb-0">Playlist builder</h2>
+            </div>
+            <form method="post" action="{{ url_for('create_playlist_route') }}">
+              <fieldset class="mb-3">
+                <legend class="form-label fs-6">Search in</legend>
+                <div class="btn-group w-100" role="group" aria-label="Song source">
+                  <input class="btn-check" type="radio" name="source" id="builder-liked" value="liked" checked>
+                  <label class="btn btn-outline-dark" for="builder-liked">My Liked Songs</label>
+                  <input class="btn-check" type="radio" name="source" id="builder-catalog" value="catalog">
+                  <label class="btn btn-outline-dark" for="builder-catalog">All Spotify</label>
+                </div>
+              </fieldset>
 
+              <fieldset class="mb-3">
+                <legend class="form-label fs-6">Discovery style</legend>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="discovery_mode" id="mode-keywords" value="keywords" checked>
+                  <label class="form-check-label" for="mode-keywords">Genre / keywords</label>
+                </div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="discovery_mode" id="mode-random" value="random">
+                  <label class="form-check-label" for="mode-random">Surprise me</label>
+                </div>
+              </fieldset>
+
+              <div class="mb-3" id="keywords-group">
+                <label class="form-label" for="keywords">Genres or keywords</label>
+                <input class="form-control" id="keywords" name="keywords" placeholder="jazz, fusion, late night">
+                <div class="form-text">Separate ideas with commas. We match song, artist, album, and artist genres.</div>
+              </div>
+
+              <div class="row g-3 mb-3">
+                <div class="col-sm-4">
+                  <label class="form-label" for="target-bpm">Target BPM</label>
+                  <input class="form-control" id="target-bpm" name="target_bpm" type="number" min="30" max="250" step="1" placeholder="Optional">
+                </div>
+                <div class="col-sm-4">
+                  <label class="form-label" for="bpm-tolerance">BPM ±</label>
+                  <input class="form-control" id="bpm-tolerance" name="bpm_tolerance" type="number" min="0" max="50" value="5">
+                </div>
+                <div class="col-sm-4">
+                  <label class="form-label" for="num-tracks">Songs</label>
+                  <input class="form-control" id="num-tracks" name="num_tracks" type="number" min="1" max="100" value="20" required>
+                </div>
+              </div>
+              <div class="form-text mb-3">BPM works only if this Spotify app has legacy Audio Features access.</div>
+
+              <div class="mb-4">
+                <label class="form-label" for="playlist-name">Playlist name</label>
+                <input class="form-control" id="playlist-name" name="playlist_name" placeholder="Optional — we can name it for you">
+              </div>
+              <button class="btn btn-spotify btn-lg w-100" type="submit">Create playlist</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="col-lg-5">
+          <div class="card applet h-100 p-4">
+            <div class="d-flex align-items-center gap-2 mb-3">
+              <span class="applet-number">2</span><h2 class="h4 mb-0">Obscure song finder</h2>
+            </div>
+            <p class="text-secondary">Find a random track available in a country and below a stream-count ceiling.</p>
+            <form method="post" action="{{ url_for('find_obscure_song') }}">
+              <fieldset class="mb-3">
+                <legend class="form-label fs-6">Search in</legend>
+                <div class="btn-group w-100" role="group" aria-label="Song source">
+                  <input class="btn-check" type="radio" name="source" id="obscure-liked" value="liked" checked>
+                  <label class="btn btn-outline-dark" for="obscure-liked">My Liked Songs</label>
+                  <input class="btn-check" type="radio" name="source" id="obscure-catalog" value="catalog">
+                  <label class="btn btn-outline-dark" for="obscure-catalog">All Spotify</label>
+                </div>
+              </fieldset>
+              <div class="mb-3">
+                <label class="form-label" for="country">Country</label>
+                <input class="form-control text-uppercase" id="country" name="country" maxlength="2" pattern="[A-Za-z]{2}" placeholder="US" required>
+                <div class="form-text">Use a two-letter ISO country code. This means playable in that market, not artist nationality.</div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="max-streams">Maximum streams</label>
+                <input class="form-control" id="max-streams" name="max_streams" type="number" min="0" step="1" value="100000" required>
+              </div>
+              <div class="alert alert-light border small">Spotify's public API does not return exact stream counts. This control is ready for a licensed stream-data provider, but it cannot produce a verified result from Spotify alone.</div>
+              <button class="btn btn-dark btn-lg w-100" type="submit">Check availability</button>
+            </form>
+          </div>
+        </section>
+      </div>
+
+      {% if playlist_url %}
+        <div class="result-card bg-white p-4 mt-4">
+          <div class="d-flex flex-column flex-sm-row gap-2">
+            <a class="btn btn-spotify flex-grow-1" href="{{ playlist_url }}" target="_blank" rel="noopener">Open playlist on Spotify</a>
+            {% if show_download %}<a class="btn btn-outline-dark" href="{{ url_for('download_csv') }}">Download CSV</a>{% endif %}
+          </div>
+        </div>
+      {% endif %}
+
+      {% if tracks %}
+        <div class="result-card bg-white p-3 p-md-4 mt-4">
+          <h2 class="h4">Playlist contents</h2>
+          <p class="text-secondary">{{ filtered_count }} matched; {{ selected_count }} were selected.</p>
+          <div class="table-responsive">
+            <table class="table table-hover align-middle">
+              <thead><tr><th>#</th><th>Song</th><th>Artist</th><th>Genres</th><th>BPM</th><th></th></tr></thead>
+              <tbody>
+                {% for track in tracks %}
+                  <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ track.name }}<div class="small text-secondary">{{ track.album }}{% if track.release_year %} · {{ track.release_year }}{% endif %}</div></td>
+                    <td>{{ track.artists | join(', ') }}</td>
+                    <td>{{ track.genres | join(', ') or '—' }}</td>
+                    <td>{{ track.bpm | round | int if track.bpm else '—' }}</td>
+                    <td><a href="{{ track.url }}" target="_blank" rel="noopener">Open</a></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% endif %}
+    {% endif %}
+  </main>
+
+  <script>
+    const modeInputs = document.querySelectorAll('input[name="discovery_mode"]');
+    const keywordsGroup = document.getElementById('keywords-group');
+    function updateDiscoveryMode() {
+      if (!keywordsGroup) return;
+      const random = document.getElementById('mode-random').checked;
+      keywordsGroup.classList.toggle('d-none', random);
+      document.getElementById('keywords').disabled = random;
+    }
+    modeInputs.forEach(input => input.addEventListener('change', updateDiscoveryMode));
+    updateDiscoveryMode();
+  </script>
 </body>
 </html>
