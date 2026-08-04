@@ -18,6 +18,11 @@
     .btn-spotify { background: var(--spotify); color: #08170d; font-weight: 700; }
     .btn-spotify:hover { background: #18bd52; color: #08170d; }
     .result-card { border-radius: 1rem; border: 1px solid #dce4de; }
+    .stat-tile { background: #f3f6f3; border-radius: .8rem; padding: 1rem; height: 100%; }
+    .stat-value { font-size: 1.8rem; font-weight: 750; line-height: 1; }
+    .bar-track { height: .65rem; background: #e5ebe6; border-radius: 999px; overflow: hidden; }
+    .bar-fill { height: 100%; min-width: 2px; background: var(--spotify); border-radius: inherit; }
+    .distribution-row + .distribution-row { margin-top: .75rem; }
     th { white-space: nowrap; }
   </style>
 </head>
@@ -194,6 +199,44 @@
             {% if show_download %}<a class="btn btn-outline-dark" href="{{ url_for('download_csv') }}">Download CSV</a>{% endif %}
           </div>
         </div>
+      {% endif %}
+
+      {% if playlist_stats %}
+        <section class="result-card bg-white p-4 mt-4" aria-labelledby="liked-breakdown-title">
+          <h2 class="h4" id="liked-breakdown-title">Liked Songs breakdown</h2>
+          <p class="text-secondary">This funnel shows where candidates were removed before playlist selection.</p>
+          <div class="row g-3 mb-4">
+            <div class="col-6 col-lg-3"><div class="stat-tile"><div class="stat-value">{{ playlist_stats.total_liked }}</div><div class="small text-secondary mt-2">Total Liked Songs</div></div></div>
+            <div class="col-6 col-lg-3"><div class="stat-tile"><div class="stat-value">{{ playlist_stats.genre_matching }}</div><div class="small text-secondary mt-2">Matched genre / keywords</div></div></div>
+            <div class="col-6 col-lg-3"><div class="stat-tile"><div class="stat-value">{{ playlist_stats.genre_featured }}</div><div class="small text-secondary mt-2">Matches with features</div></div></div>
+            <div class="col-6 col-lg-3"><div class="stat-tile"><div class="stat-value">{{ playlist_stats.bpm_matching }}</div><div class="small text-secondary mt-2">Matches in BPM range</div></div></div>
+          </div>
+
+          <div class="row g-4">
+            <div class="col-lg-6">
+              <h3 class="h5">BPM distribution</h3>
+              <p class="small text-secondary">ReccoBeats features were available for {{ playlist_stats.features_available }} of {{ playlist_stats.features_attempted }} analyzed Liked Songs{% if playlist_stats.total_liked > playlist_stats.features_attempted %}; this run samples up to {{ playlist_stats.features_attempted }} of {{ playlist_stats.total_liked }}{% endif %}.</p>
+              {% for bucket in playlist_stats.bpm_distribution %}
+                <div class="distribution-row">
+                  <div class="d-flex justify-content-between small mb-1"><span>{{ bucket.label }} BPM</span><strong>{{ bucket.count }}</strong></div>
+                  <div class="bar-track" role="img" aria-label="{{ bucket.label }} BPM: {{ bucket.count }} songs"><div class="bar-fill" style="width: {{ bucket.percent }}%"></div></div>
+                </div>
+              {% endfor %}
+            </div>
+            <div class="col-lg-6">
+              <h3 class="h5">Top genres in Liked Songs</h3>
+              <p class="small text-secondary">A song can belong to more than one artist genre, so these counts can overlap.</p>
+              {% for genre in playlist_stats.genre_distribution %}
+                <div class="distribution-row">
+                  <div class="d-flex justify-content-between small mb-1"><span>{{ genre.label }}</span><strong>{{ genre.count }}</strong></div>
+                  <div class="bar-track" role="img" aria-label="{{ genre.label }}: {{ genre.count }} songs"><div class="bar-fill" style="width: {{ genre.percent }}%"></div></div>
+                </div>
+              {% else %}
+                <p class="text-secondary">Spotify did not return genre metadata for this library.</p>
+              {% endfor %}
+            </div>
+          </div>
+        </section>
       {% endif %}
 
       {% if tracks %}

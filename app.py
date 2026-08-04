@@ -4,6 +4,7 @@ import os
 import random
 import re
 import string
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import Flask, redirect, render_template, request, send_file, session, url_for
@@ -29,6 +30,7 @@ MAX_STREAM_CHECKS = 8  # The provider's free plan has a small monthly request al
 RECCOBEATS_BASE_URL = "https://api.reccobeats.com/v1"
 RECCOBEATS_FEATURE_CACHE = {}
 MAX_BPM_RETRIES = 5
+MAX_LIBRARY_BPM_ANALYSIS = 200
 
 
 def get_spotify_oauth():
@@ -135,7 +137,7 @@ def get_stream_count(track_id):
     return count
 
 
-def add_artist_genres(sp, tracks):
+def add_artist_genres(sp, tracks, lookup_limit=MAX_ARTIST_LOOKUPS):
     """Fetch a bounded set of artists concurrently and cache their genres.
 
     Spotify removed the bulk-artists endpoint, so fetching artists one at a time
@@ -146,7 +148,8 @@ def add_artist_genres(sp, tracks):
         artist_id for track in tracks for artist_id in track["artist_ids"]
     ))
     uncached_ids = [artist_id for artist_id in artist_ids if artist_id not in ARTIST_GENRE_CACHE]
-    uncached_ids = uncached_ids[:MAX_ARTIST_LOOKUPS]
+    if lookup_limit is not None:
+        uncached_ids = uncached_ids[:lookup_limit]
 
     def fetch_genres(artist_id):
         try:
@@ -156,7 +159,8 @@ def add_artist_genres(sp, tracks):
             return artist_id, []
 
     if uncached_ids:
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        worker_count = 16 if lookup_limit is None else 8
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = [executor.submit(fetch_genres, artist_id) for artist_id in uncached_ids]
             for future in as_completed(futures):
                 artist_id, genres = future.result()
@@ -193,7 +197,7 @@ def add_audio_features(sp, tracks):
     return bool(bpm_by_id)
 
 
-def get_reccobeats_audio_features(track, spotify_id):
+def get_reccobeats_audio_features(track, spotify_id, max_search_pages=8):
     """Resolve an exact Spotify recording and return ReccoBeats audio features."""
     # Titles can have covers and remasters. Comparing the Spotify ID in href
     # guarantees that we choose the exact recording supplied by the user.
@@ -201,7 +205,7 @@ def get_reccobeats_audio_features(track, spotify_id):
     page = 0
     total_pages = 1
     try:
-        while page < min(total_pages, 8) and not match:
+        while page < min(total_pages, max_search_pages) and not match:
             search_response = requests.get(
                 f"{RECCOBEATS_BASE_URL}/track/search",
                 params={"searchText": track["name"], "page": page},
@@ -235,7 +239,7 @@ def get_reccobeats_audio_features(track, spotify_id):
     return features
 
 
-def add_reccobeats_features(tracks):
+def add_reccobeats_features(tracks, max_search_pages=8, workers=8):
     """Attach ReccoBeats features to tracks concurrently and skip unavailable songs."""
     def fetch(track):
         track_id = track.get("id")
@@ -243,13 +247,16 @@ def add_reccobeats_features(tracks):
             return track, None
         if track_id not in RECCOBEATS_FEATURE_CACHE:
             try:
-                RECCOBEATS_FEATURE_CACHE[track_id] = get_reccobeats_audio_features(track, track_id)
+                features = get_reccobeats_audio_features(track, track_id, max_search_pages)
+                RECCOBEATS_FEATURE_CACHE[track_id] = features
             except RuntimeError:
-                RECCOBEATS_FEATURE_CACHE[track_id] = None
-        return track, RECCOBEATS_FEATURE_CACHE[track_id]
+                features = None
+        else:
+            features = RECCOBEATS_FEATURE_CACHE[track_id]
+        return track, features
 
     enriched = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [executor.submit(fetch, track) for track in tracks]
         for future in as_completed(futures):
             track, features = future.result()
@@ -258,6 +265,52 @@ def add_reccobeats_features(tracks):
                 track["bpm"] = features.get("tempo")
                 enriched.append(track)
     return enriched
+
+
+def liked_song_statistics(tracks, featured_tracks, features_attempted, keywords, target_bpm, tolerance):
+    """Create funnel counts and compact distributions for the results page."""
+    matching = [track for track in tracks if matches_keywords(track, keywords)]
+    featured_ids = {track["id"] for track in featured_tracks}
+    matching_featured = [track for track in matching if track.get("id") in featured_ids]
+    bpm_matching = [
+        track for track in matching_featured
+        if track.get("bpm") is not None and abs(track["bpm"] - target_bpm) <= tolerance
+    ]
+
+    genre_counts = Counter(genre for track in tracks for genre in track.get("genres", []))
+    top_genres = genre_counts.most_common(12)
+    genre_max = top_genres[0][1] if top_genres else 1
+
+    bpm_buckets = [
+        ("Under 80", 0, 80), ("80–99", 80, 100), ("100–119", 100, 120),
+        ("120–139", 120, 140), ("140–159", 140, 160), ("160+", 160, float("inf")),
+    ]
+    bpm_distribution = []
+    bpm_max = 1
+    for label, minimum, maximum in bpm_buckets:
+        bucket_count = sum(
+            1 for track in featured_tracks
+            if track.get("bpm") is not None and minimum <= track["bpm"] < maximum
+        )
+        bpm_distribution.append({"label": label, "count": bucket_count})
+        bpm_max = max(bpm_max, bucket_count)
+
+    return {
+        "total_liked": len(tracks),
+        "genre_matching": len(matching),
+        "genre_featured": len(matching_featured),
+        "bpm_matching": len(bpm_matching),
+        "features_available": len(featured_tracks),
+        "features_attempted": features_attempted,
+        "genre_distribution": [
+            {"label": genre, "count": count, "percent": round(count / genre_max * 100, 1)}
+            for genre, count in top_genres
+        ],
+        "bpm_distribution": [
+            {**bucket, "percent": round(bucket["count"] / bpm_max * 100, 1)}
+            for bucket in bpm_distribution
+        ],
+    }
 
 
 def get_liked_tracks(sp):
@@ -368,6 +421,7 @@ def render_home(**context):
         "stream_checks": None,
         "audio_track": None,
         "audio_features": None,
+        "playlist_stats": None,
     }
     defaults.update(context)
     return render_template("index.html", **defaults)
@@ -409,15 +463,32 @@ def create_playlist_route():
 
     if not keywords:
         return render_home(error="Add at least one genre or keyword.")
+    if target_bpm is None:
+        return render_home(error="Enter a target BPM.")
 
     # Liked Songs are loaded once. Catalog searches request fresh pages on each
     # replacement round so failed BPM candidates are replaced with new tracks.
     liked_candidates = []
+    all_liked_tracks = []
+    library_featured = []
+    library_analysis_count = 0
     if source == "liked":
-        liked_candidates = get_liked_tracks(sp)
-        random.shuffle(liked_candidates)
-        add_artist_genres(sp, liked_candidates)
-        liked_candidates = [track for track in liked_candidates if matches_keywords(track, keywords)]
+        all_liked_tracks = get_liked_tracks(sp)
+        random.shuffle(all_liked_tracks)
+        # Statistics need genres across the whole library, not only the first
+        # bounded candidate set used during playlist generation.
+        add_artist_genres(sp, all_liked_tracks, lookup_limit=None)
+        liked_candidates = [track for track in all_liked_tracks if matches_keywords(track, keywords)]
+
+        # A full ReccoBeats resolution can require multiple searches per song.
+        # Analyze a broad library sample with one search page per track, and
+        # clearly report coverage on the results page.
+        nonmatching = [track for track in all_liked_tracks if track not in liked_candidates]
+        analysis_pool = (liked_candidates + nonmatching)[:MAX_LIBRARY_BPM_ANALYSIS]
+        library_analysis_count = len(analysis_pool)
+        library_featured = add_reccobeats_features(
+            analysis_pool, max_search_pages=1, workers=12
+        )
 
     eligible = {}
     checked_ids = set()
@@ -454,11 +525,25 @@ def create_playlist_route():
 
     filtered = list(eligible.values())
     selected = choose_tracks(filtered, count)
+    playlist_stats = None
+    if source == "liked":
+        featured_by_id = {track["id"]: track for track in library_featured}
+        featured_by_id.update({
+            track["id"]: track for track in liked_candidates if track.get("audio_features")
+        })
+        playlist_stats = liked_song_statistics(
+            all_liked_tracks,
+            list(featured_by_id.values()),
+            library_analysis_count,
+            keywords,
+            target_bpm,
+            bpm_tolerance,
+        )
     if not selected:
         return render_home(error=(
             "No songs had both matching keywords and available ReccoBeats features in that BPM range. "
             "Try broader keywords or a wider BPM tolerance."
-        ))
+        ), playlist_stats=playlist_stats)
 
     label = ", ".join(keywords)
     playlist_name = request.form.get("playlist_name", "").strip() or f"Discovery: {label}"
@@ -474,6 +559,7 @@ def create_playlist_route():
         filtered_count=len(filtered),
         selected_count=len(selected),
         tracks=selected,
+        playlist_stats=playlist_stats,
     )
 
 
