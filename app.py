@@ -2,10 +2,12 @@ import csv
 import io
 import os
 import random
+import re
 import string
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import Flask, redirect, render_template, request, send_file, session, url_for
+import requests
 import spotipy
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyOAuth
@@ -21,6 +23,9 @@ SCOPE = "user-library-read playlist-modify-private playlist-modify-public"
 SEARCH_PAGE_SIZE = 10  # Spotify reduced the Search endpoint maximum to 10 in 2026.
 MAX_ARTIST_LOOKUPS = 80  # Keep one web request below Render/Gunicorn's timeout.
 ARTIST_GENRE_CACHE = {}
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+RAPIDAPI_HOST = "spotify-stream-count.p.rapidapi.com"
+MAX_STREAM_CHECKS = 8  # The provider's free plan has a small monthly request allowance.
 
 
 def get_spotify_oauth():
@@ -67,6 +72,64 @@ def track_from_spotify(track):
         "genres": [],
         "bpm": None,
     }
+
+
+def spotify_track_id(value):
+    """Extract a Spotify track ID from a link, URI, or bare ID."""
+    value = (value or "").strip()
+    match = re.search(r"(?:open\.spotify\.com/track/|spotify:track:)([A-Za-z0-9]{22})", value)
+    if match:
+        return match.group(1)
+    return value if re.fullmatch(r"[A-Za-z0-9]{22}", value) else None
+
+
+def find_stream_count(payload):
+    """Read the count while tolerating small response-shape changes by the provider."""
+    if isinstance(payload, bool):
+        return None
+    if isinstance(payload, (int, float)):
+        return int(payload)
+    if isinstance(payload, str):
+        cleaned = payload.replace(",", "").strip()
+        return int(cleaned) if cleaned.isdigit() else None
+    if isinstance(payload, dict):
+        preferred_keys = ("streamCount", "stream_count", "streams", "playcount", "count", "value")
+        for key in preferred_keys:
+            if key in payload:
+                count = find_stream_count(payload[key])
+                if count is not None:
+                    return count
+        for value in payload.values():
+            count = find_stream_count(value)
+            if count is not None:
+                return count
+    if isinstance(payload, list):
+        for value in reversed(payload):
+            count = find_stream_count(value)
+            if count is not None:
+                return count
+    return None
+
+
+def get_stream_count(track_id):
+    if not RAPIDAPI_KEY:
+        raise RuntimeError("RapidAPI is not configured. Add RAPIDAPI_KEY in Render's Environment settings.")
+    response = requests.get(
+        f"https://{RAPIDAPI_HOST}/v1/spotify/tracks/{track_id}/streams/current",
+        headers={"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": RAPIDAPI_HOST},
+        timeout=12,
+    )
+    if response.status_code == 429:
+        raise RuntimeError("The RapidAPI request allowance has been reached. Check your plan or try again later.")
+    try:
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        detail = response.text[:160].strip()
+        raise RuntimeError(f"The stream-count service returned an error: {detail or exc}") from exc
+    count = find_stream_count(response.json())
+    if count is None:
+        raise RuntimeError("The stream-count service returned an unfamiliar response without a stream count.")
+    return count
 
 
 def add_artist_genres(sp, tracks):
@@ -125,6 +188,19 @@ def add_audio_features(sp, tracks):
     for track in tracks:
         track["bpm"] = bpm_by_id.get(track.get("id"))
     return bool(bpm_by_id)
+
+
+def get_all_audio_features(sp, track_id):
+    """Return every feature Spotify supplies for one track."""
+    try:
+        response = sp.audio_features([track_id])
+    except (SpotifyException, AttributeError) as exc:
+        raise RuntimeError(
+            "Spotify did not provide Audio Features. This endpoint is unavailable to most Development Mode apps created after 2024."
+        ) from exc
+    if not response or not response[0]:
+        raise RuntimeError("Spotify did not return audio features for that track.")
+    return response[0]
 
 
 def get_liked_tracks(sp):
@@ -228,6 +304,9 @@ def render_home(**context):
         "selected_count": None,
         "tracks": None,
         "random_track": None,
+        "stream_checks": None,
+        "audio_track": None,
+        "audio_features": None,
     }
     defaults.update(context)
     return render_template("index.html", **defaults)
@@ -309,22 +388,74 @@ def create_playlist_route():
 
 @app.route("/find_obscure_song", methods=["POST"])
 def find_obscure_song():
-    """Explain the unsupported constraint instead of returning a made-up match."""
-    if not get_spotify_client():
+    sp = get_spotify_client()
+    if not sp:
         return redirect(url_for("login"))
-    country = request.form.get("country", "").strip().upper()
+    source = request.form.get("source", "liked")
+    keywords = [word.strip() for word in request.form.get("obscure_keywords", "").split(",") if word.strip()]
+    random_mode = request.form.get("obscure_mode") == "random"
     max_streams = request.form.get("max_streams", "").strip()
-    if len(country) != 2 or not country.isalpha():
-        return render_home(error="Country must be a two-letter ISO code, such as US, BR, or JP.")
     try:
-        if int(max_streams) < 0:
+        stream_ceiling = int(max_streams)
+        if stream_ceiling < 0:
             raise ValueError
     except ValueError:
         return render_home(error="Maximum streams must be zero or greater.")
+    if not random_mode and not keywords:
+        return render_home(error="Add a genre or keyword, or choose Surprise me.")
+
+    tracks = get_liked_tracks(sp) if source == "liked" else search_catalog(
+        sp, keywords if not random_mode else [], MAX_STREAM_CHECKS
+    )
+    if source == "liked" and not random_mode:
+        random.shuffle(tracks)
+        add_artist_genres(sp, tracks)
+    candidates = [track for track in tracks if random_mode or matches_keywords(track, keywords)]
+    random.shuffle(candidates)
+    candidates = candidates[:MAX_STREAM_CHECKS]
+    if not candidates:
+        return render_home(error="No songs matched those keywords. Try a broader search.")
+
+    checked = 0
+    try:
+        for track in candidates:
+            checked += 1
+            count = get_stream_count(track["id"])
+            if count <= stream_ceiling:
+                track["stream_count"] = count
+                return render_home(
+                    message=f"Found a song with {count:,} streams after checking {checked} candidate(s).",
+                    random_track=track,
+                    stream_checks=checked,
+                )
+    except (RuntimeError, requests.RequestException) as exc:
+        return render_home(error=str(exc))
     return render_home(error=(
-        f"Spotify does not expose exact stream counts, so the app cannot verify “under {int(max_streams):,} "
-        f"streams” in {country}. A licensed third-party stream-count provider is required for this applet."
+        f"None of the {checked} checked candidates had {stream_ceiling:,} streams or fewer. "
+        "Try a higher ceiling or different keywords."
     ))
+
+
+@app.route("/track_audio_features", methods=["POST"])
+def track_audio_features():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("login"))
+    track_id = spotify_track_id(request.form.get("track_link"))
+    if not track_id:
+        return render_home(error="Enter a valid Spotify track link, URI, or 22-character track ID.")
+    try:
+        track = track_from_spotify(sp.track(track_id))
+        features = get_all_audio_features(sp, track_id)
+    except SpotifyException as exc:
+        return render_home(error=f"Spotify could not load that track: {exc.msg or 'check the link and try again.'}")
+    except RuntimeError as exc:
+        return render_home(error=str(exc))
+    return render_home(
+        message=f"Loaded audio features for “{track['name']}”.",
+        audio_track=track,
+        audio_features=features,
+    )
 
 
 @app.route("/download_csv")

@@ -106,7 +106,7 @@
             <div class="d-flex align-items-center gap-2 mb-3">
               <span class="applet-number">2</span><h2 class="h4 mb-0">Obscure song finder</h2>
             </div>
-            <p class="text-secondary">Find a random track available in a country and below a stream-count ceiling.</p>
+            <p class="text-secondary">Find a random track below a stream-count ceiling, using live data from the Spotify Stream Count API.</p>
             <form method="post" action="{{ url_for('find_obscure_song') }}">
               <fieldset class="mb-3">
                 <legend class="form-label fs-6">Search in</legend>
@@ -117,21 +117,87 @@
                   <label class="btn btn-outline-dark" for="obscure-catalog">All Spotify</label>
                 </div>
               </fieldset>
-              <div class="mb-3">
-                <label class="form-label" for="country">Country</label>
-                <input class="form-control text-uppercase" id="country" name="country" maxlength="2" pattern="[A-Za-z]{2}" placeholder="US" required>
-                <div class="form-text">Use a two-letter ISO country code. This means playable in that market, not artist nationality.</div>
+              <fieldset class="mb-3">
+                <legend class="form-label fs-6">Discovery style</legend>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="obscure_mode" id="obscure-mode-keywords" value="keywords" checked>
+                  <label class="form-check-label" for="obscure-mode-keywords">Genre / keywords</label>
+                </div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="obscure_mode" id="obscure-mode-random" value="random">
+                  <label class="form-check-label" for="obscure-mode-random">Surprise me</label>
+                </div>
+              </fieldset>
+              <div class="mb-3" id="obscure-keywords-group">
+                <label class="form-label" for="obscure-keywords">Genres or keywords</label>
+                <input class="form-control" id="obscure-keywords" name="obscure_keywords" placeholder="indie folk, ambient">
+                <div class="form-text">Separate multiple ideas with commas.</div>
               </div>
               <div class="mb-3">
                 <label class="form-label" for="max-streams">Maximum streams</label>
                 <input class="form-control" id="max-streams" name="max_streams" type="number" min="0" step="1" value="100000" required>
               </div>
-              <div class="alert alert-light border small">Spotify's public API does not return exact stream counts. This control is ready for a licensed stream-data provider, but it cannot produce a verified result from Spotify alone.</div>
-              <button class="btn btn-dark btn-lg w-100" type="submit">Check availability</button>
+              <div class="alert alert-light border small">Each search checks up to 8 shuffled candidates to conserve your RapidAPI request allowance.</div>
+              <button class="btn btn-dark btn-lg w-100" type="submit">Find an obscure song</button>
             </form>
           </div>
         </section>
+
+        <section class="col-12">
+          <div class="card applet p-4">
+            <div class="d-flex align-items-center gap-2 mb-3">
+              <span class="applet-number">3</span><h2 class="h4 mb-0">Track audio features</h2>
+            </div>
+            <p class="text-secondary">Paste a Spotify track link to inspect every audio feature Spotify makes available for that recording.</p>
+            <form class="row g-3 align-items-end" method="post" action="{{ url_for('track_audio_features') }}">
+              <div class="col-md-9">
+                <label class="form-label" for="track-link">Spotify track link</label>
+                <input class="form-control" id="track-link" name="track_link" type="url" placeholder="https://open.spotify.com/track/…" required>
+              </div>
+              <div class="col-md-3">
+                <button class="btn btn-dark btn-lg w-100" type="submit">Analyze track</button>
+              </div>
+            </form>
+            <div class="form-text mt-2">Audio Features is a legacy Spotify endpoint and may not be enabled for newer Development Mode apps.</div>
+          </div>
+        </section>
       </div>
+
+      {% if random_track %}
+        <div class="result-card bg-white p-4 mt-4">
+          <div class="eyebrow mb-2">Obscure find</div>
+          <div class="d-flex flex-column flex-md-row justify-content-between gap-3">
+            <div>
+              <h2 class="h3 mb-1">{{ random_track.name }}</h2>
+              <p class="text-secondary mb-2">{{ random_track.artists | join(', ') }} · {{ random_track.album }}</p>
+              <div class="fs-4 fw-bold">{{ "{:,}".format(random_track.stream_count) }} streams</div>
+              {% if random_track.genres %}<div class="small text-secondary mt-1">{{ random_track.genres | join(', ') }}</div>{% endif %}
+            </div>
+            <div class="align-self-md-center">
+              <a class="btn btn-spotify btn-lg" href="{{ random_track.url }}" target="_blank" rel="noopener">Open on Spotify</a>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      {% if audio_track and audio_features %}
+        <div class="result-card bg-white p-4 mt-4">
+          <div class="eyebrow mb-2">Audio analysis</div>
+          <h2 class="h3 mb-1">{{ audio_track.name }}</h2>
+          <p class="text-secondary">{{ audio_track.artists | join(', ') }} · {{ audio_track.album }}</p>
+          <div class="table-responsive">
+            <table class="table table-striped align-middle mb-0">
+              <thead><tr><th>Feature</th><th>Value</th></tr></thead>
+              <tbody>
+                {% for name, value in audio_features.items() %}
+                  <tr><td class="fw-semibold">{{ name | replace('_', ' ') | title }}</td><td>{{ value }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <a class="btn btn-outline-dark mt-3" href="{{ audio_track.url }}" target="_blank" rel="noopener">Open track on Spotify</a>
+        </div>
+      {% endif %}
 
       {% if playlist_url %}
         <div class="result-card bg-white p-4 mt-4">
@@ -179,6 +245,17 @@
     }
     modeInputs.forEach(input => input.addEventListener('change', updateDiscoveryMode));
     updateDiscoveryMode();
+
+    const obscureModeInputs = document.querySelectorAll('input[name="obscure_mode"]');
+    const obscureKeywordsGroup = document.getElementById('obscure-keywords-group');
+    function updateObscureMode() {
+      if (!obscureKeywordsGroup) return;
+      const random = document.getElementById('obscure-mode-random').checked;
+      obscureKeywordsGroup.classList.toggle('d-none', random);
+      document.getElementById('obscure-keywords').disabled = random;
+    }
+    obscureModeInputs.forEach(input => input.addEventListener('change', updateObscureMode));
+    updateObscureMode();
   </script>
 </body>
 </html>
