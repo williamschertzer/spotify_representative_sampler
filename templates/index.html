@@ -54,32 +54,20 @@
                   <input class="btn-check" type="radio" name="source" id="builder-liked" value="liked" checked>
                   <label class="btn btn-outline-dark" for="builder-liked">My Liked Songs</label>
                   <input class="btn-check" type="radio" name="source" id="builder-catalog" value="catalog">
-                  <label class="btn btn-outline-dark" for="builder-catalog">All Spotify</label>
+                  <label class="btn btn-outline-dark" for="builder-catalog">Surprise me · All Spotify</label>
                 </div>
               </fieldset>
 
-              <fieldset class="mb-3">
-                <legend class="form-label fs-6">Discovery style</legend>
-                <div class="form-check form-check-inline">
-                  <input class="form-check-input" type="radio" name="discovery_mode" id="mode-keywords" value="keywords" checked>
-                  <label class="form-check-label" for="mode-keywords">Genre / keywords</label>
-                </div>
-                <div class="form-check form-check-inline">
-                  <input class="form-check-input" type="radio" name="discovery_mode" id="mode-random" value="random">
-                  <label class="form-check-label" for="mode-random">Surprise me</label>
-                </div>
-              </fieldset>
-
-              <div class="mb-3" id="keywords-group">
+              <div class="mb-3">
                 <label class="form-label" for="keywords">Genres or keywords</label>
-                <input class="form-control" id="keywords" name="keywords" placeholder="jazz, fusion, late night">
+                <input class="form-control" id="keywords" name="keywords" placeholder="jazz, fusion, late night" required>
                 <div class="form-text">Separate ideas with commas. We match song, artist, album, and artist genres.</div>
               </div>
 
               <div class="row g-3 mb-3">
                 <div class="col-sm-4">
                   <label class="form-label" for="target-bpm">Target BPM</label>
-                  <input class="form-control" id="target-bpm" name="target_bpm" type="number" min="30" max="250" step="1" placeholder="Optional">
+                  <input class="form-control" id="target-bpm" name="target_bpm" type="number" min="30" max="250" step="1" value="120" required>
                 </div>
                 <div class="col-sm-4">
                   <label class="form-label" for="bpm-tolerance">BPM ±</label>
@@ -90,7 +78,7 @@
                   <input class="form-control" id="num-tracks" name="num_tracks" type="number" min="1" max="100" value="20" required>
                 </div>
               </div>
-              <div class="form-text mb-3">BPM works only if this Spotify app has legacy Audio Features access.</div>
+              <div class="form-text mb-3">ReccoBeats features are calculated first; only songs within the target BPM ± tolerance can be selected. Up to five replacement rounds are allowed.</div>
 
               <div class="mb-4">
                 <label class="form-label" for="playlist-name">Playlist name</label>
@@ -235,17 +223,6 @@
   </main>
 
   <script>
-    const modeInputs = document.querySelectorAll('input[name="discovery_mode"]');
-    const keywordsGroup = document.getElementById('keywords-group');
-    function updateDiscoveryMode() {
-      if (!keywordsGroup) return;
-      const random = document.getElementById('mode-random').checked;
-      keywordsGroup.classList.toggle('d-none', random);
-      document.getElementById('keywords').disabled = random;
-    }
-    modeInputs.forEach(input => input.addEventListener('change', updateDiscoveryMode));
-    updateDiscoveryMode();
-
     const obscureModeInputs = document.querySelectorAll('input[name="obscure_mode"]');
     const obscureKeywordsGroup = document.getElementById('obscure-keywords-group');
     function updateObscureMode() {

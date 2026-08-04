@@ -27,6 +27,8 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 RAPIDAPI_HOST = "spotify-stream-count.p.rapidapi.com"
 MAX_STREAM_CHECKS = 8  # The provider's free plan has a small monthly request allowance.
 RECCOBEATS_BASE_URL = "https://api.reccobeats.com/v1"
+RECCOBEATS_FEATURE_CACHE = {}
+MAX_BPM_RETRIES = 5
 
 
 def get_spotify_oauth():
@@ -233,6 +235,31 @@ def get_reccobeats_audio_features(track, spotify_id):
     return features
 
 
+def add_reccobeats_features(tracks):
+    """Attach ReccoBeats features to tracks concurrently and skip unavailable songs."""
+    def fetch(track):
+        track_id = track.get("id")
+        if not track_id:
+            return track, None
+        if track_id not in RECCOBEATS_FEATURE_CACHE:
+            try:
+                RECCOBEATS_FEATURE_CACHE[track_id] = get_reccobeats_audio_features(track, track_id)
+            except RuntimeError:
+                RECCOBEATS_FEATURE_CACHE[track_id] = None
+        return track, RECCOBEATS_FEATURE_CACHE[track_id]
+
+    enriched = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(fetch, track) for track in tracks]
+        for future in as_completed(futures):
+            track, features = future.result()
+            if features:
+                track["audio_features"] = features
+                track["bpm"] = features.get("tempo")
+                enriched.append(track)
+    return enriched
+
+
 def get_liked_tracks(sp):
     tracks = []
     offset = 0
@@ -246,15 +273,19 @@ def get_liked_tracks(sp):
     return tracks
 
 
-def search_catalog(sp, keywords, desired_count, market=None):
+def search_catalog(sp, keywords, desired_count, market=None, search_round=0):
     """Collect a varied catalog candidate pool using Spotify Search."""
     query = " ".join(keywords).strip()
     candidates = {}
-    attempts = max(3, min(20, desired_count * 2))
+    attempts = max(3, min(10, (desired_count + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE + 1))
     for attempt in range(attempts):
         # A short random prefix gives the random option different results each run.
         search_query = query or random.choice(string.ascii_lowercase)
-        offset = random.randint(0, 99) * SEARCH_PAGE_SIZE if not query else attempt * SEARCH_PAGE_SIZE
+        offset = (
+            random.randint(0, 99) * SEARCH_PAGE_SIZE
+            if not query
+            else (search_round * attempts + attempt) * SEARCH_PAGE_SIZE
+        )
         try:
             response = sp.search(
                 q=search_query,
@@ -271,7 +302,7 @@ def search_catalog(sp, keywords, desired_count, market=None):
             track = track_from_spotify(item)
             if track["id"]:
                 candidates[track["id"]] = track
-        if not items or len(candidates) >= desired_count * 3:
+        if not items or len(candidates) >= desired_count:
             break
     return add_artist_genres(sp, list(candidates.values()))
 
@@ -369,7 +400,6 @@ def create_playlist_route():
 
     source = request.form.get("source", "liked")
     keywords = [word.strip() for word in request.form.get("keywords", "").split(",") if word.strip()]
-    random_mode = request.form.get("discovery_mode") == "random"
     try:
         count = max(1, min(100, int(request.form.get("num_tracks", "20"))))
         target_bpm = float(request.form["target_bpm"]) if request.form.get("target_bpm") else None
@@ -377,37 +407,68 @@ def create_playlist_route():
     except ValueError:
         return render_home(error="Track count, BPM, and BPM tolerance must be valid numbers.")
 
-    if not random_mode and not keywords:
-        return render_home(error="Add at least one genre or keyword, or choose Random discovery.")
+    if not keywords:
+        return render_home(error="Add at least one genre or keyword.")
 
-    tracks = get_liked_tracks(sp) if source == "liked" else search_catalog(sp, keywords if not random_mode else [], count)
-    if source == "liked" and not random_mode and keywords:
-        # Shuffle first so repeated searches do not always inspect the same first artists.
-        random.shuffle(tracks)
-        add_artist_genres(sp, tracks)
-    filtered = [track for track in tracks if random_mode or matches_keywords(track, keywords)]
+    # Liked Songs are loaded once. Catalog searches request fresh pages on each
+    # replacement round so failed BPM candidates are replaced with new tracks.
+    liked_candidates = []
+    if source == "liked":
+        liked_candidates = get_liked_tracks(sp)
+        random.shuffle(liked_candidates)
+        add_artist_genres(sp, liked_candidates)
+        liked_candidates = [track for track in liked_candidates if matches_keywords(track, keywords)]
 
-    if target_bpm is not None:
-        if not add_audio_features(sp, filtered):
-            return render_home(error=(
-                "Spotify did not provide BPM data for this app. Spotify removed Audio Features "
-                "from Development Mode in 2026; leave BPM blank or use an app with legacy access."
-            ))
-        filtered = [
-            track for track in filtered
-            if track.get("bpm") is not None and abs(track["bpm"] - target_bpm) <= bpm_tolerance
-        ]
+    eligible = {}
+    checked_ids = set()
+    retries_used = 0
+    candidate_batch_size = max(10, min(30, count * 2))
+    for attempt in range(MAX_BPM_RETRIES + 1):
+        if len(eligible) >= count:
+            break
+        if source == "liked":
+            new_candidates = [
+                track for track in liked_candidates if track.get("id") not in checked_ids
+            ][:candidate_batch_size]
+        else:
+            catalog_tracks = search_catalog(
+                sp, keywords, candidate_batch_size, search_round=attempt
+            )
+            new_candidates = [
+                track for track in catalog_tracks
+                if matches_keywords(track, keywords) and track.get("id") not in checked_ids
+            ][:candidate_batch_size]
 
+        if not new_candidates:
+            break
+        checked_ids.update(track["id"] for track in new_candidates)
+        featured_tracks = add_reccobeats_features(new_candidates)
+        for track in featured_tracks:
+            bpm = track.get("bpm")
+            if bpm is None:
+                continue
+            if target_bpm is None or abs(bpm - target_bpm) <= bpm_tolerance:
+                eligible[track["id"]] = track
+        if len(eligible) < count and attempt < MAX_BPM_RETRIES:
+            retries_used += 1
+
+    filtered = list(eligible.values())
     selected = choose_tracks(filtered, count)
     if not selected:
-        return render_home(error="No songs matched those settings. Try broader keywords or a wider BPM range.")
+        return render_home(error=(
+            "No songs had both matching keywords and available ReccoBeats features in that BPM range. "
+            "Try broader keywords or a wider BPM tolerance."
+        ))
 
-    label = "random" if random_mode else ", ".join(keywords)
+    label = ", ".join(keywords)
     playlist_name = request.form.get("playlist_name", "").strip() or f"Discovery: {label}"
     playlist = create_playlist(sp, selected, playlist_name, f"Created from {source} songs for: {label}")
     session["csv_data"] = tracks_to_csv_bytes(selected).decode("utf-8")
     return render_home(
-        message=f"Created “{playlist_name}” with {len(selected)} songs from {source} songs.",
+        message=(
+            f"Created “{playlist_name}” with {len(selected)} of {count} requested songs "
+            f"after checking {len(checked_ids)} candidates and using {retries_used} replacement round(s)."
+        ),
         playlist_url=playlist["external_urls"]["spotify"],
         show_download=True,
         filtered_count=len(filtered),
