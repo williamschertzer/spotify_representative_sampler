@@ -26,6 +26,7 @@ ARTIST_GENRE_CACHE = {}
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 RAPIDAPI_HOST = "spotify-stream-count.p.rapidapi.com"
 MAX_STREAM_CHECKS = 8  # The provider's free plan has a small monthly request allowance.
+RECCOBEATS_BASE_URL = "https://api.reccobeats.com/v1"
 
 
 def get_spotify_oauth():
@@ -190,17 +191,46 @@ def add_audio_features(sp, tracks):
     return bool(bpm_by_id)
 
 
-def get_all_audio_features(sp, track_id):
-    """Return every feature Spotify supplies for one track."""
+def get_reccobeats_audio_features(track, spotify_id):
+    """Resolve an exact Spotify recording and return ReccoBeats audio features."""
+    # Titles can have covers and remasters. Comparing the Spotify ID in href
+    # guarantees that we choose the exact recording supplied by the user.
+    match = None
+    page = 0
+    total_pages = 1
     try:
-        response = sp.audio_features([track_id])
-    except (SpotifyException, AttributeError) as exc:
-        raise RuntimeError(
-            "Spotify did not provide Audio Features. This endpoint is unavailable to most Development Mode apps created after 2024."
-        ) from exc
-    if not response or not response[0]:
-        raise RuntimeError("Spotify did not return audio features for that track.")
-    return response[0]
+        while page < min(total_pages, 8) and not match:
+            search_response = requests.get(
+                f"{RECCOBEATS_BASE_URL}/track/search",
+                params={"searchText": track["name"], "page": page},
+                timeout=12,
+            )
+            search_response.raise_for_status()
+            payload = search_response.json()
+            results = payload.get("content", [])
+            match = next(
+                (result for result in results if spotify_track_id(result.get("href")) == spotify_id),
+                None,
+            )
+            total_pages = max(1, int(payload.get("totalPages", 1)))
+            page += 1
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        raise RuntimeError("ReccoBeats could not search for this track. Please try again later.") from exc
+    if not match:
+        raise RuntimeError("This exact Spotify recording was not found in the ReccoBeats catalog.")
+
+    try:
+        feature_response = requests.get(
+            f"{RECCOBEATS_BASE_URL}/track/{match['id']}/audio-features",
+            timeout=12,
+        )
+        feature_response.raise_for_status()
+        features = feature_response.json()
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        raise RuntimeError("ReccoBeats could not return audio features for this track.") from exc
+    if not isinstance(features, dict) or not features:
+        raise RuntimeError("ReccoBeats returned an empty audio-feature result for this track.")
+    return features
 
 
 def get_liked_tracks(sp):
@@ -446,13 +476,13 @@ def track_audio_features():
         return render_home(error="Enter a valid Spotify track link, URI, or 22-character track ID.")
     try:
         track = track_from_spotify(sp.track(track_id))
-        features = get_all_audio_features(sp, track_id)
+        features = get_reccobeats_audio_features(track, track_id)
     except SpotifyException as exc:
         return render_home(error=f"Spotify could not load that track: {exc.msg or 'check the link and try again.'}")
     except RuntimeError as exc:
         return render_home(error=str(exc))
     return render_home(
-        message=f"Loaded audio features for “{track['name']}”.",
+        message=f"Loaded ReccoBeats audio features for “{track['name']}”.",
         audio_track=track,
         audio_features=features,
     )

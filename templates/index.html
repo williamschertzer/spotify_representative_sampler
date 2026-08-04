@@ -148,7 +148,7 @@
             <div class="d-flex align-items-center gap-2 mb-3">
               <span class="applet-number">3</span><h2 class="h4 mb-0">Track audio features</h2>
             </div>
-            <p class="text-secondary">Paste a Spotify track link to inspect every audio feature Spotify makes available for that recording.</p>
+            <p class="text-secondary">Paste a Spotify track link to inspect every audio feature ReccoBeats has calculated for that exact recording.</p>
             <form class="row g-3 align-items-end" method="post" action="{{ url_for('track_audio_features') }}">
               <div class="col-md-9">
                 <label class="form-label" for="track-link">Spotify track link</label>
@@ -158,7 +158,7 @@
                 <button class="btn btn-dark btn-lg w-100" type="submit">Analyze track</button>
               </div>
             </form>
-            <div class="form-text mt-2">Audio Features is a legacy Spotify endpoint and may not be enabled for newer Development Mode apps.</div>
+            <div class="form-text mt-2">Track metadata comes from Spotify; acoustic measurements come from ReccoBeats.</div>
           </div>
         </section>
       </div>
@@ -182,7 +182,7 @@
 
       {% if audio_track and audio_features %}
         <div class="result-card bg-white p-4 mt-4">
-          <div class="eyebrow mb-2">Audio analysis</div>
+          <div class="eyebrow mb-2">ReccoBeats audio analysis</div>
           <h2 class="h3 mb-1">{{ audio_track.name }}</h2>
           <p class="text-secondary">{{ audio_track.artists | join(', ') }} · {{ audio_track.album }}</p>
           <div class="table-responsive">
