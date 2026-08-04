@@ -3,6 +3,7 @@ import io
 import os
 import random
 import string
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import Flask, redirect, render_template, request, send_file, session, url_for
 import spotipy
@@ -18,6 +19,8 @@ CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:5000/callback")
 SCOPE = "user-library-read playlist-modify-private playlist-modify-public"
 SEARCH_PAGE_SIZE = 10  # Spotify reduced the Search endpoint maximum to 10 in 2026.
+MAX_ARTIST_LOOKUPS = 80  # Keep one web request below Render/Gunicorn's timeout.
+ARTIST_GENRE_CACHE = {}
 
 
 def get_spotify_oauth():
@@ -44,7 +47,7 @@ def get_token():
 
 def get_spotify_client():
     token_info = get_token()
-    return spotipy.Spotify(auth=token_info["access_token"]) if token_info else None
+    return spotipy.Spotify(auth=token_info["access_token"], requests_timeout=10) if token_info else None
 
 
 def track_from_spotify(track):
@@ -67,20 +70,37 @@ def track_from_spotify(track):
 
 
 def add_artist_genres(sp, tracks):
-    """Fetch each unique artist once. The former bulk-artists endpoint was removed."""
-    genre_by_artist = {}
-    artist_ids = {artist_id for track in tracks for artist_id in track["artist_ids"]}
-    for artist_id in artist_ids:
+    """Fetch a bounded set of artists concurrently and cache their genres.
+
+    Spotify removed the bulk-artists endpoint, so fetching artists one at a time
+    for a large library can exceed a web server's request timeout. A small worker
+    pool makes independent lookups overlap, while the cap keeps the request fast.
+    """
+    artist_ids = list(dict.fromkeys(
+        artist_id for track in tracks for artist_id in track["artist_ids"]
+    ))
+    uncached_ids = [artist_id for artist_id in artist_ids if artist_id not in ARTIST_GENRE_CACHE]
+    uncached_ids = uncached_ids[:MAX_ARTIST_LOOKUPS]
+
+    def fetch_genres(artist_id):
         try:
-            genre_by_artist[artist_id] = sp.artist(artist_id).get("genres", [])
-        except SpotifyException:
-            genre_by_artist[artist_id] = []
+            return artist_id, sp.artist(artist_id).get("genres", [])
+        except Exception:
+            # A missing artist or temporary API failure should not break the playlist.
+            return artist_id, []
+
+    if uncached_ids:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(fetch_genres, artist_id) for artist_id in uncached_ids]
+            for future in as_completed(futures):
+                artist_id, genres = future.result()
+                ARTIST_GENRE_CACHE[artist_id] = genres
 
     for track in tracks:
         track["genres"] = sorted({
             genre
             for artist_id in track["artist_ids"]
-            for genre in genre_by_artist.get(artist_id, [])
+            for genre in ARTIST_GENRE_CACHE.get(artist_id, [])
         })
     return tracks
 
@@ -117,7 +137,7 @@ def get_liked_tracks(sp):
         if len(items) < 50:
             break
         offset += 50
-    return add_artist_genres(sp, tracks)
+    return tracks
 
 
 def search_catalog(sp, keywords, desired_count, market=None):
@@ -252,6 +272,10 @@ def create_playlist_route():
         return render_home(error="Add at least one genre or keyword, or choose Random discovery.")
 
     tracks = get_liked_tracks(sp) if source == "liked" else search_catalog(sp, keywords if not random_mode else [], count)
+    if source == "liked" and not random_mode and keywords:
+        # Shuffle first so repeated searches do not always inspect the same first artists.
+        random.shuffle(tracks)
+        add_artist_genres(sp, tracks)
     filtered = [track for track in tracks if random_mode or matches_keywords(track, keywords)]
 
     if target_bpm is not None:
