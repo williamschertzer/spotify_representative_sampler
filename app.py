@@ -22,8 +22,9 @@ CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:5000/callback")
 SCOPE = "user-library-read playlist-modify-private playlist-modify-public"
 SEARCH_PAGE_SIZE = 10  # Spotify reduced the Search endpoint maximum to 10 in 2026.
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPIDAPI_HOST = "spotify-stream-count.p.rapidapi.com"
+SPOTSCRAPER_API_KEY = os.getenv("SPOTSCRAPER_API_KEY")
+SPOTSCRAPER_BASE_URL = "https://api.spotscraper.com/v1"
+STREAM_COUNT_CACHE = {}
 OBSCURE_CANDIDATE_POOL_SIZE = 80
 RECCOBEATS_BASE_URL = "https://api.reccobeats.com/v1"
 RECCOBEATS_FEATURE_CACHE = {}
@@ -133,23 +134,36 @@ def find_stream_count(payload):
 
 
 def get_stream_count(track_id):
-    if not RAPIDAPI_KEY:
-        raise RuntimeError("RapidAPI is not configured. Add RAPIDAPI_KEY in Render's Environment settings.")
+    if track_id in STREAM_COUNT_CACHE:
+        return STREAM_COUNT_CACHE[track_id]
+    if not SPOTSCRAPER_API_KEY:
+        raise RuntimeError(
+            "SpotScraper is not configured. Add SPOTSCRAPER_API_KEY in Render's Environment settings."
+        )
     response = requests.get(
-        f"https://{RAPIDAPI_HOST}/v1/spotify/tracks/{track_id}/streams/current",
-        headers={"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": RAPIDAPI_HOST},
+        f"{SPOTSCRAPER_BASE_URL}/tracks/{track_id}",
+        headers={"x-api-key": SPOTSCRAPER_API_KEY, "Accept": "application/json"},
         timeout=12,
     )
+    if response.status_code in (401, 403):
+        raise RuntimeError("SpotScraper rejected the API key. Check SPOTSCRAPER_API_KEY in Render.")
+    if response.status_code == 402:
+        raise RuntimeError("SpotScraper requires an active billing balance or subscription.")
     if response.status_code == 429:
-        raise RuntimeError("The RapidAPI request allowance has been reached. Check your plan or try again later.")
+        raise RuntimeError("SpotScraper's request limit was reached. Check your usage or try again later.")
     try:
         response.raise_for_status()
     except requests.RequestException as exc:
         detail = response.text[:160].strip()
-        raise RuntimeError(f"The stream-count service returned an error: {detail or exc}") from exc
-    count = find_stream_count(response.json())
+        raise RuntimeError(f"SpotScraper returned an error: {detail or exc}") from exc
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("SpotScraper returned an unreadable response. Please try again later.") from exc
+    count = find_stream_count(payload)
     if count is None:
-        raise RuntimeError("The stream-count service returned an unfamiliar response without a stream count.")
+        raise RuntimeError("SpotScraper returned track data without a recognizable stream count.")
+    STREAM_COUNT_CACHE[track_id] = count
     return count
 
 

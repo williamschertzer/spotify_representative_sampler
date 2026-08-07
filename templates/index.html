@@ -121,7 +121,7 @@
                 </div>
                 <div class="form-text">The range includes both endpoints. 0 is least popular and 100 is most popular.</div>
               </div>
-              <div class="alert alert-light border small">Each search selects one random qualifying song and uses one stream-count request.</div>
+              <div class="alert alert-light border small">Each search selects one random qualifying song and uses at most one SpotScraper request. Repeated tracks may use a cached count.</div>
               <button class="btn btn-dark btn-lg w-100" type="submit">Find an obscure song</button>
             </form>
           </div>
