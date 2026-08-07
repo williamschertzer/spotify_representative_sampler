@@ -29,6 +29,10 @@ RECCOBEATS_BASE_URL = "https://api.reccobeats.com/v1"
 RECCOBEATS_FEATURE_CACHE = {}
 MAX_BPM_RETRIES = 5
 MAX_LIBRARY_BPM_ANALYSIS = 40
+PITCH_CLASSES = (
+    "C", "C♯ / D♭", "D", "D♯ / E♭", "E", "F",
+    "F♯ / G♭", "G", "G♯ / A♭", "A", "A♯ / B♭", "B",
+)
 LASTFM_API_KEY = os.getenv("LASTFM_API_KEY")
 LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_TAG_CACHE = {}
@@ -286,6 +290,61 @@ def get_reccobeats_audio_features(track, spotify_id, max_search_pages=8):
     if not isinstance(features, dict) or not features:
         raise RuntimeError("ReccoBeats returned an empty audio-feature result for this track.")
     return features
+
+
+def display_audio_features(features):
+    """Turn raw ReccoBeats data into readable rows for the feature analyzer."""
+    excluded = {"id", "href", "isrc", "mode"}
+    normalized = {
+        "acousticness", "danceability", "energy", "instrumentalness",
+        "liveness", "speechiness", "valence",
+    }
+    descriptions = {
+        "acousticness": "Confidence that the track is acoustic; higher means more acoustic.",
+        "danceability": "How suitable the track is for dancing based on its musical elements.",
+        "energy": "Perceived intensity and activity; higher values feel more energetic.",
+        "instrumentalness": "Likelihood that the track contains no vocals.",
+        "liveness": "Likelihood that the recording contains a live audience.",
+        "loudness": "Average perceived loudness measured in decibels (dB).",
+        "speechiness": "Amount of spoken-word content in the track.",
+        "tempo": "Estimated speed of the track in beats per minute.",
+        "valence": "Musical positivity; higher values tend to sound happier or more upbeat.",
+    }
+    rows = []
+    for raw_name, value in features.items():
+        name = str(raw_name).lower()
+        if name in excluded:
+            continue
+        label = name.replace("_", " ").title()
+        description = descriptions.get(name, "")
+        if name == "key":
+            try:
+                key_number = int(value)
+                pitch = PITCH_CLASSES[key_number] if 0 <= key_number < len(PITCH_CLASSES) else "Unknown"
+                display_value = f"{pitch} ({key_number} / 11)"
+            except (TypeError, ValueError):
+                display_value = str(value)
+            description = "Pitch class: 0 is C, 1 is C♯/D♭, and the scale continues through 11 (B)."
+        elif name == "tempo":
+            try:
+                display_value = f"{float(value):.1f} BPM"
+            except (TypeError, ValueError):
+                display_value = f"{value} BPM"
+            label = "Tempo (BPM)"
+        elif name in normalized:
+            try:
+                display_value = f"{float(value):.2f} / 1.00"
+            except (TypeError, ValueError):
+                display_value = str(value)
+        elif name == "loudness":
+            try:
+                display_value = f"{float(value):.1f} dB"
+            except (TypeError, ValueError):
+                display_value = f"{value} dB"
+        else:
+            display_value = value
+        rows.append({"name": label, "value": display_value, "description": description})
+    return rows
 
 
 def add_reccobeats_features(tracks, max_search_pages=8, workers=8):
@@ -683,7 +742,7 @@ def track_audio_features():
     return render_home(
         message=f"Loaded ReccoBeats audio features for “{track['name']}”.",
         audio_track=track,
-        audio_features=features,
+        audio_features=display_audio_features(features),
     )
 
 

@@ -182,8 +182,14 @@
             <table class="table table-striped align-middle mb-0">
               <thead><tr><th>Feature</th><th>Value</th></tr></thead>
               <tbody>
-                {% for name, value in audio_features.items() %}
-                  <tr><td class="fw-semibold">{{ name | replace('_', ' ') | title }}</td><td>{{ value }}</td></tr>
+                {% for feature in audio_features %}
+                  <tr>
+                    <td class="fw-semibold">
+                      {{ feature.name }}
+                      {% if feature.description %}<div class="small fw-normal text-secondary mt-1">{{ feature.description }}</div>{% endif %}
+                    </td>
+                    <td class="text-nowrap">{{ feature.value }}</td>
+                  </tr>
                 {% endfor %}
               </tbody>
             </table>
