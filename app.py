@@ -24,7 +24,7 @@ SCOPE = "user-library-read playlist-modify-private playlist-modify-public"
 SEARCH_PAGE_SIZE = 10  # Spotify reduced the Search endpoint maximum to 10 in 2026.
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 RAPIDAPI_HOST = "spotify-stream-count.p.rapidapi.com"
-MAX_STREAM_CHECKS = 8  # The provider's free plan has a small monthly request allowance.
+OBSCURE_CANDIDATE_POOL_SIZE = 80
 RECCOBEATS_BASE_URL = "https://api.reccobeats.com/v1"
 RECCOBEATS_FEATURE_CACHE = {}
 MAX_BPM_RETRIES = 5
@@ -89,6 +89,7 @@ def track_from_spotify(track):
         "release_year": release_date.split("-")[0] if release_date else "",
         "uri": track.get("uri"),
         "url": (track.get("external_urls") or {}).get("spotify", ""),
+        "popularity": track.get("popularity"),
         "genres": [],
         "bpm": None,
     }
@@ -327,7 +328,7 @@ def display_audio_features(features):
             description = "Pitch class: 0 is C, 1 is C♯/D♭, and the scale continues through 11 (B)."
         elif name == "tempo":
             try:
-                display_value = f"{float(value):.1f} BPM"
+                display_value = f"{float(value):.2f} BPM"
             except (TypeError, ValueError):
                 display_value = f"{value} BPM"
             label = "Tempo (BPM)"
@@ -338,9 +339,11 @@ def display_audio_features(features):
                 display_value = str(value)
         elif name == "loudness":
             try:
-                display_value = f"{float(value):.1f} dB"
+                display_value = f"{float(value):.2f} dB"
             except (TypeError, ValueError):
                 display_value = f"{value} dB"
+        elif isinstance(value, float):
+            display_value = f"{value:.2f}"
         else:
             display_value = value
         rows.append({"name": label, "value": display_value, "description": description})
@@ -435,7 +438,7 @@ def get_liked_tracks(sp):
     return tracks
 
 
-def search_catalog(sp, keywords, desired_count, market=None, search_round=0):
+def search_catalog(sp, keywords, desired_count, market=None, search_round=0, include_tags=True):
     """Collect a varied catalog candidate pool using Spotify Search."""
     query = " ".join(keywords).strip()
     candidates = {}
@@ -466,7 +469,8 @@ def search_catalog(sp, keywords, desired_count, market=None, search_round=0):
                 candidates[track["id"]] = track
         if not items or len(candidates) >= desired_count:
             break
-    return add_lastfm_tags(list(candidates.values())) if LASTFM_API_KEY else list(candidates.values())
+    tracks = list(candidates.values())
+    return add_lastfm_tags(tracks) if include_tags and LASTFM_API_KEY else tracks
 
 
 def matches_keywords(track, keywords):
@@ -528,6 +532,7 @@ def render_home(**context):
         "tracks": None,
         "random_track": None,
         "stream_checks": None,
+        "obscure_audio_features": None,
         "audio_track": None,
         "audio_features": None,
         "playlist_stats": None,
@@ -678,50 +683,54 @@ def find_obscure_song():
     if not sp:
         return redirect(url_for("login"))
     source = request.form.get("source", "liked")
-    keywords = [word.strip() for word in request.form.get("obscure_keywords", "").split(",") if word.strip()]
-    random_mode = request.form.get("obscure_mode") == "random"
-    max_streams = request.form.get("max_streams", "").strip()
+    min_popularity = request.form.get("min_popularity", "").strip()
+    max_popularity = request.form.get("max_popularity", "").strip()
     try:
-        stream_ceiling = int(max_streams)
-        if stream_ceiling < 0:
+        popularity_floor = int(min_popularity)
+        popularity_ceiling = int(max_popularity)
+        if not 0 <= popularity_floor <= popularity_ceiling <= 100:
             raise ValueError
     except ValueError:
-        return render_home(error="Maximum streams must be zero or greater.")
-    if not random_mode and not keywords:
-        return render_home(error="Add a genre or keyword, or choose Surprise me.")
+        return render_home(error=(
+            "Popularity values must be whole numbers from 0 to 100, "
+            "and the minimum cannot be greater than the maximum."
+        ))
 
     tracks = get_liked_tracks(sp) if source == "liked" else search_catalog(
-        sp, keywords if not random_mode else [], MAX_STREAM_CHECKS
+        sp, [], OBSCURE_CANDIDATE_POOL_SIZE, include_tags=False
     )
-    if source == "liked" and not random_mode:
-        if not LASTFM_API_KEY:
-            return render_home(error="Liked Songs genre analysis needs LASTFM_API_KEY configured in Render.")
-        random.shuffle(tracks)
-        add_lastfm_tags(tracks)
-    candidates = [track for track in tracks if random_mode or matches_keywords(track, keywords)]
-    random.shuffle(candidates)
-    candidates = candidates[:MAX_STREAM_CHECKS]
+    candidates = [
+        track for track in tracks
+        if track.get("popularity") is not None
+        and popularity_floor <= track["popularity"] <= popularity_ceiling
+    ]
     if not candidates:
-        return render_home(error="No songs matched those keywords. Try a broader search.")
+        return render_home(error=(
+            f"No songs with popularity from {popularity_floor} to {popularity_ceiling} were found. "
+            "Try a wider popularity range."
+        ))
 
-    checked = 0
+    track = random.choice(candidates)
     try:
-        for track in candidates:
-            checked += 1
-            count = get_stream_count(track["id"])
-            if count <= stream_ceiling:
-                track["stream_count"] = count
-                return render_home(
-                    message=f"Found a song with {count:,} streams after checking {checked} candidate(s).",
-                    random_track=track,
-                    stream_checks=checked,
-                )
+        track["stream_count"] = get_stream_count(track["id"])
     except (RuntimeError, requests.RequestException) as exc:
         return render_home(error=str(exc))
-    return render_home(error=(
-        f"None of the {checked} checked candidates had {stream_ceiling:,} streams or fewer. "
-        "Try a higher ceiling or different keywords."
-    ))
+
+    feature_rows = None
+    feature_error = None
+    try:
+        feature_rows = display_audio_features(get_reccobeats_audio_features(track, track["id"]))
+    except RuntimeError as exc:
+        feature_error = str(exc)
+    return render_home(
+        message=(
+            f"Randomly selected from {len(candidates)} song(s) with popularity "
+            f"from {popularity_floor} to {popularity_ceiling}."
+        ),
+        error=feature_error,
+        random_track=track,
+        obscure_audio_features=feature_rows,
+    )
 
 
 @app.route("/track_audio_features", methods=["POST"])

@@ -99,7 +99,7 @@
             <div class="d-flex align-items-center gap-2 mb-3">
               <span class="applet-number">2</span><h2 class="h4 mb-0">Obscure song finder</h2>
             </div>
-            <p class="text-secondary">Find a random track below a stream-count ceiling, using live data from the Spotify Stream Count API.</p>
+            <p class="text-secondary">Choose a Spotify popularity range, then inspect a random qualifying song's streams and audio features.</p>
             <form method="post" action="{{ url_for('find_obscure_song') }}">
               <fieldset class="mb-3">
                 <legend class="form-label fs-6">Search in</legend>
@@ -110,27 +110,18 @@
                   <label class="btn btn-outline-dark" for="obscure-catalog">All Spotify</label>
                 </div>
               </fieldset>
-              <fieldset class="mb-3">
-                <legend class="form-label fs-6">Discovery style</legend>
-                <div class="form-check form-check-inline">
-                  <input class="form-check-input" type="radio" name="obscure_mode" id="obscure-mode-keywords" value="keywords" checked>
-                  <label class="form-check-label" for="obscure-mode-keywords">Genre / keywords</label>
+              <div class="row g-3 mb-3">
+                <div class="col-sm-6">
+                  <label class="form-label" for="min-popularity">Minimum popularity</label>
+                  <input class="form-control" id="min-popularity" name="min_popularity" type="number" min="0" max="100" step="1" value="0" required>
                 </div>
-                <div class="form-check form-check-inline">
-                  <input class="form-check-input" type="radio" name="obscure_mode" id="obscure-mode-random" value="random">
-                  <label class="form-check-label" for="obscure-mode-random">Surprise me</label>
+                <div class="col-sm-6">
+                  <label class="form-label" for="max-popularity">Maximum popularity</label>
+                  <input class="form-control" id="max-popularity" name="max_popularity" type="number" min="0" max="100" step="1" value="20" required>
                 </div>
-              </fieldset>
-              <div class="mb-3" id="obscure-keywords-group">
-                <label class="form-label" for="obscure-keywords">Genres or keywords</label>
-                <input class="form-control" id="obscure-keywords" name="obscure_keywords" placeholder="indie folk, ambient">
-                <div class="form-text">Separate multiple ideas with commas.</div>
+                <div class="form-text">The range includes both endpoints. 0 is least popular and 100 is most popular.</div>
               </div>
-              <div class="mb-3">
-                <label class="form-label" for="max-streams">Maximum streams</label>
-                <input class="form-control" id="max-streams" name="max_streams" type="number" min="0" step="1" value="100000" required>
-              </div>
-              <div class="alert alert-light border small">Each search checks up to 8 shuffled candidates to conserve your RapidAPI request allowance.</div>
+              <div class="alert alert-light border small">Each search selects one random qualifying song and uses one stream-count request.</div>
               <button class="btn btn-dark btn-lg w-100" type="submit">Find an obscure song</button>
             </form>
           </div>
@@ -157,24 +148,42 @@
       </div>
 
       {% if random_track %}
-        <div class="result-card bg-white p-4 mt-4">
+        <div class="result-card bg-white p-4 mt-4" id="obscure-song-results" tabindex="-1">
           <div class="eyebrow mb-2">Obscure find</div>
           <div class="d-flex flex-column flex-md-row justify-content-between gap-3">
             <div>
               <h2 class="h3 mb-1">{{ random_track.name }}</h2>
               <p class="text-secondary mb-2">{{ random_track.artists | join(', ') }} · {{ random_track.album }}</p>
-              <div class="fs-4 fw-bold">{{ "{:,}".format(random_track.stream_count) }} streams</div>
+              <div class="d-flex flex-wrap gap-4 mt-3">
+                <div><div class="fs-4 fw-bold">{{ random_track.popularity }} / 100</div><div class="small text-secondary">Spotify popularity</div></div>
+                <div><div class="fs-4 fw-bold">{{ "{:,}".format(random_track.stream_count) }}</div><div class="small text-secondary">Streams</div></div>
+              </div>
               {% if random_track.genres %}<div class="small text-secondary mt-1">{{ random_track.genres | join(', ') }}</div>{% endif %}
             </div>
             <div class="align-self-md-center">
               <a class="btn btn-spotify btn-lg" href="{{ random_track.url }}" target="_blank" rel="noopener">Open on Spotify</a>
             </div>
           </div>
+          {% if obscure_audio_features %}
+            <div class="table-responsive mt-4">
+              <table class="table table-striped align-middle mb-0">
+                <thead><tr><th>Audio feature</th><th>Value</th></tr></thead>
+                <tbody>
+                  {% for feature in obscure_audio_features %}
+                    <tr>
+                      <td class="fw-semibold">{{ feature.name }}{% if feature.description %}<div class="small fw-normal text-secondary mt-1">{{ feature.description }}</div>{% endif %}</td>
+                      <td class="text-nowrap">{{ feature.value }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% endif %}
         </div>
       {% endif %}
 
       {% if audio_track and audio_features %}
-        <div class="result-card bg-white p-4 mt-4">
+        <div class="result-card bg-white p-4 mt-4" id="audio-analysis-results" tabindex="-1">
           <div class="eyebrow mb-2">ReccoBeats audio analysis</div>
           <h2 class="h3 mb-1">{{ audio_track.name }}</h2>
           <p class="text-secondary">{{ audio_track.artists | join(', ') }} · {{ audio_track.album }}</p>
@@ -272,16 +281,17 @@
   </main>
 
   <script>
-    const obscureModeInputs = document.querySelectorAll('input[name="obscure_mode"]');
-    const obscureKeywordsGroup = document.getElementById('obscure-keywords-group');
-    function updateObscureMode() {
-      if (!obscureKeywordsGroup) return;
-      const random = document.getElementById('obscure-mode-random').checked;
-      obscureKeywordsGroup.classList.toggle('d-none', random);
-      document.getElementById('obscure-keywords').disabled = random;
+    const audioAnalysisResults = document.getElementById('audio-analysis-results');
+    if (audioAnalysisResults) {
+      audioAnalysisResults.scrollIntoView({ behavior: 'auto', block: 'start' });
+      audioAnalysisResults.focus({ preventScroll: true });
     }
-    obscureModeInputs.forEach(input => input.addEventListener('change', updateObscureMode));
-    updateObscureMode();
+
+    const obscureSongResults = document.getElementById('obscure-song-results');
+    if (obscureSongResults) {
+      obscureSongResults.scrollIntoView({ behavior: 'auto', block: 'start' });
+      obscureSongResults.focus({ preventScroll: true });
+    }
   </script>
 </body>
 </html>
