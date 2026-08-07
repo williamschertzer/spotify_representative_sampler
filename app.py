@@ -22,15 +22,17 @@ CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:5000/callback")
 SCOPE = "user-library-read playlist-modify-private playlist-modify-public"
 SEARCH_PAGE_SIZE = 10  # Spotify reduced the Search endpoint maximum to 10 in 2026.
-MAX_ARTIST_LOOKUPS = 80  # Keep one web request below Render/Gunicorn's timeout.
-ARTIST_GENRE_CACHE = {}
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 RAPIDAPI_HOST = "spotify-stream-count.p.rapidapi.com"
 MAX_STREAM_CHECKS = 8  # The provider's free plan has a small monthly request allowance.
 RECCOBEATS_BASE_URL = "https://api.reccobeats.com/v1"
 RECCOBEATS_FEATURE_CACHE = {}
 MAX_BPM_RETRIES = 5
-MAX_LIBRARY_BPM_ANALYSIS = 200
+MAX_LIBRARY_BPM_ANALYSIS = 40
+LASTFM_API_KEY = os.getenv("LASTFM_API_KEY")
+LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
+LASTFM_TAG_CACHE = {}
+MAX_LIBRARY_TAG_ANALYSIS = 40
 
 
 def get_spotify_oauth():
@@ -57,7 +59,16 @@ def get_token():
 
 def get_spotify_client():
     token_info = get_token()
-    return spotipy.Spotify(auth=token_info["access_token"], requests_timeout=10) if token_info else None
+    return (
+        spotipy.Spotify(
+            auth=token_info["access_token"],
+            requests_timeout=10,
+            retries=1,
+            status_retries=1,
+            backoff_factor=0.3,
+        )
+        if token_info else None
+    )
 
 
 def track_from_spotify(track):
@@ -137,41 +148,79 @@ def get_stream_count(track_id):
     return count
 
 
-def add_artist_genres(sp, tracks, lookup_limit=MAX_ARTIST_LOOKUPS):
-    """Fetch a bounded set of artists concurrently and cache their genres.
+def get_lastfm_tags(track):
+    """Return ranked Last.fm track tags, with artist tags as a fallback."""
+    if not LASTFM_API_KEY:
+        raise RuntimeError("Last.fm is not configured. Add LASTFM_API_KEY in Render's Environment settings.")
+    artist = track["artists"][0] if track.get("artists") else ""
+    if not artist:
+        return []
 
-    Spotify removed the bulk-artists endpoint, so fetching artists one at a time
-    for a large library can exceed a web server's request timeout. A small worker
-    pool makes independent lookups overlap, while the cap keeps the request fast.
-    """
-    artist_ids = list(dict.fromkeys(
-        artist_id for track in tracks for artist_id in track["artist_ids"]
-    ))
-    uncached_ids = [artist_id for artist_id in artist_ids if artist_id not in ARTIST_GENRE_CACHE]
-    if lookup_limit is not None:
-        uncached_ids = uncached_ids[:lookup_limit]
+    def request_tags(method, **params):
+        response = requests.get(
+            LASTFM_API_URL,
+            params={
+                "method": method,
+                "api_key": LASTFM_API_KEY,
+                "format": "json",
+                "autocorrect": 1,
+                **params,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("error"):
+            return []
+        tags = payload.get("toptags", {}).get("tag", [])
+        if isinstance(tags, dict):
+            tags = [tags]
+        ranked = []
+        for tag in tags:
+            name = str(tag.get("name", "")).strip().lower()
+            try:
+                count = int(tag.get("count", 0))
+            except (TypeError, ValueError):
+                count = 0
+            if name:
+                ranked.append((name, count))
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        strong = [name for name, count in ranked if count >= 10]
+        return (strong or [name for name, _ in ranked])[:10]
 
-    def fetch_genres(artist_id):
-        try:
-            return artist_id, sp.artist(artist_id).get("genres", [])
-        except Exception:
-            # A missing artist or temporary API failure should not break the playlist.
-            return artist_id, []
+    try:
+        tags = request_tags("track.getTopTags", artist=artist, track=track["name"])
+        return tags or request_tags("artist.getTopTags", artist=artist)
+    except (requests.RequestException, ValueError):
+        return []
 
-    if uncached_ids:
-        worker_count = 16 if lookup_limit is None else 8
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(fetch_genres, artist_id) for artist_id in uncached_ids]
+
+def add_lastfm_tags(tracks, lookup_limit=MAX_LIBRARY_TAG_ANALYSIS):
+    """Attach cached Last.fm tags without making any Spotify artist requests."""
+    pending = [
+        track for track in tracks
+        if track.get("id") and track["id"] not in LASTFM_TAG_CACHE
+    ][:lookup_limit]
+
+    def fetch(track):
+        return track["id"], get_lastfm_tags(track)
+
+    if pending:
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = [executor.submit(fetch, track) for track in pending]
             for future in as_completed(futures):
-                artist_id, genres = future.result()
-                ARTIST_GENRE_CACHE[artist_id] = genres
+                try:
+                    track_id, tags = future.result()
+                    LASTFM_TAG_CACHE[track_id] = tags
+                except RuntimeError:
+                    raise
+                except Exception:
+                    continue
 
     for track in tracks:
-        track["genres"] = sorted({
-            genre
-            for artist_id in track["artist_ids"]
-            for genre in ARTIST_GENRE_CACHE.get(artist_id, [])
-        })
+        tags = LASTFM_TAG_CACHE.get(track.get("id"), [])
+        track["tags"] = tags
+        track["genres"] = tags  # Existing filters and templates use this field.
     return tracks
 
 
@@ -302,6 +351,7 @@ def liked_song_statistics(tracks, featured_tracks, features_attempted, keywords,
         "bpm_matching": len(bpm_matching),
         "features_available": len(featured_tracks),
         "features_attempted": features_attempted,
+        "genre_coverage": sum(1 for track in tracks if track.get("genres")),
         "genre_distribution": [
             {"label": genre, "count": count, "percent": round(count / genre_max * 100, 1)}
             for genre, count in top_genres
@@ -357,7 +407,7 @@ def search_catalog(sp, keywords, desired_count, market=None, search_round=0):
                 candidates[track["id"]] = track
         if not items or len(candidates) >= desired_count:
             break
-    return add_artist_genres(sp, list(candidates.values()))
+    return add_lastfm_tags(list(candidates.values())) if LASTFM_API_KEY else list(candidates.values())
 
 
 def matches_keywords(track, keywords):
@@ -465,6 +515,8 @@ def create_playlist_route():
         return render_home(error="Add at least one genre or keyword.")
     if target_bpm is None:
         return render_home(error="Enter a target BPM.")
+    if source == "liked" and not LASTFM_API_KEY:
+        return render_home(error="Liked Songs genre analysis needs LASTFM_API_KEY configured in Render.")
 
     # Liked Songs are loaded once. Catalog searches request fresh pages on each
     # replacement round so failed BPM candidates are replaced with new tracks.
@@ -475,9 +527,7 @@ def create_playlist_route():
     if source == "liked":
         all_liked_tracks = get_liked_tracks(sp)
         random.shuffle(all_liked_tracks)
-        # Statistics need genres across the whole library, not only the first
-        # bounded candidate set used during playlist generation.
-        add_artist_genres(sp, all_liked_tracks, lookup_limit=None)
+        add_lastfm_tags(all_liked_tracks)
         liked_candidates = [track for track in all_liked_tracks if matches_keywords(track, keywords)]
 
         # A full ReccoBeats resolution can require multiple searches per song.
@@ -487,7 +537,7 @@ def create_playlist_route():
         analysis_pool = (liked_candidates + nonmatching)[:MAX_LIBRARY_BPM_ANALYSIS]
         library_analysis_count = len(analysis_pool)
         library_featured = add_reccobeats_features(
-            analysis_pool, max_search_pages=1, workers=12
+            analysis_pool, max_search_pages=1, workers=6
         )
 
     eligible = {}
@@ -585,8 +635,10 @@ def find_obscure_song():
         sp, keywords if not random_mode else [], MAX_STREAM_CHECKS
     )
     if source == "liked" and not random_mode:
+        if not LASTFM_API_KEY:
+            return render_home(error="Liked Songs genre analysis needs LASTFM_API_KEY configured in Render.")
         random.shuffle(tracks)
-        add_artist_genres(sp, tracks)
+        add_lastfm_tags(tracks)
     candidates = [track for track in tracks if random_mode or matches_keywords(track, keywords)]
     random.shuffle(candidates)
     candidates = candidates[:MAX_STREAM_CHECKS]

@@ -64,9 +64,9 @@
               </fieldset>
 
               <div class="mb-3">
-                <label class="form-label" for="keywords">Genres or keywords</label>
+                <label class="form-label" for="keywords">Genres, Last.fm tags, or keywords</label>
                 <input class="form-control" id="keywords" name="keywords" placeholder="jazz, fusion, late night" required>
-                <div class="form-text">Separate ideas with commas. We match song, artist, album, and artist genres.</div>
+                <div class="form-text">Separate ideas with commas. We match song, artist, album, and ranked Last.fm tags.</div>
               </div>
 
               <div class="row g-3 mb-3">
@@ -204,7 +204,7 @@
       {% if playlist_stats %}
         <section class="result-card bg-white p-4 mt-4" aria-labelledby="liked-breakdown-title">
           <h2 class="h4" id="liked-breakdown-title">Liked Songs breakdown</h2>
-          <p class="text-secondary">This funnel shows where candidates were removed before playlist selection.</p>
+          <p class="text-secondary">This funnel shows where candidates were removed before playlist selection. Genre matching uses the artist metadata Spotify returned within the safe request limit.</p>
           <div class="row g-3 mb-4">
             <div class="col-6 col-lg-3"><div class="stat-tile"><div class="stat-value">{{ playlist_stats.total_liked }}</div><div class="small text-secondary mt-2">Total Liked Songs</div></div></div>
             <div class="col-6 col-lg-3"><div class="stat-tile"><div class="stat-value">{{ playlist_stats.genre_matching }}</div><div class="small text-secondary mt-2">Matched genre / keywords</div></div></div>
@@ -224,8 +224,8 @@
               {% endfor %}
             </div>
             <div class="col-lg-6">
-              <h3 class="h5">Top genres in Liked Songs</h3>
-              <p class="small text-secondary">A song can belong to more than one artist genre, so these counts can overlap.</p>
+              <h3 class="h5">Top Last.fm tags in analyzed Liked Songs</h3>
+              <p class="small text-secondary">Tags were available for {{ playlist_stats.genre_coverage }} of {{ playlist_stats.total_liked }} songs in this run. Counts can overlap and can include genres, eras, locations, and moods.</p>
               {% for genre in playlist_stats.genre_distribution %}
                 <div class="distribution-row">
                   <div class="d-flex justify-content-between small mb-1"><span>{{ genre.label }}</span><strong>{{ genre.count }}</strong></div>
@@ -245,7 +245,7 @@
           <p class="text-secondary">{{ filtered_count }} matched; {{ selected_count }} were selected.</p>
           <div class="table-responsive">
             <table class="table table-hover align-middle">
-              <thead><tr><th>#</th><th>Song</th><th>Artist</th><th>Genres</th><th>BPM</th><th></th></tr></thead>
+              <thead><tr><th>#</th><th>Song</th><th>Artist</th><th>Genres / tags</th><th>BPM</th><th></th></tr></thead>
               <tbody>
                 {% for track in tracks %}
                   <tr>
