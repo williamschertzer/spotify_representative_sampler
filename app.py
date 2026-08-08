@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import logging
 import math
 import os
 import random
@@ -12,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from flask import Flask, redirect, render_template, request, send_file, session, url_for
+from werkzeug.exceptions import HTTPException
 import requests
 import spotipy
 from spotipy.exceptions import SpotifyException
@@ -23,6 +25,8 @@ try:
 except ImportError:  # Local runs without Postgres installed use SQLite.
     psycopg2 = None
 
+
+logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
@@ -239,7 +243,15 @@ def get_token():
         return None
     oauth = get_spotify_oauth()
     if oauth.is_token_expired(token_info):
-        token_info = oauth.refresh_access_token(token_info["refresh_token"])
+        # A revoked or stale refresh token means the user must log in
+        # again; crashing here would 500 every page for them.
+        try:
+            token_info = oauth.refresh_access_token(token_info["refresh_token"])
+        except Exception:
+            app.logger.exception("Spotify token refresh failed; logging user out")
+            session.pop("token_info", None)
+            session.pop("spotify_user_id", None)
+            return None
         session["token_info"] = token_info
     return token_info
 
@@ -942,6 +954,21 @@ def render_home(**context):
     defaults.update(context)
     defaults["library_analysis"] = with_axis(defaults["library_analysis"])
     return render_template("index.html", **defaults)
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    """Log the full traceback and show the error instead of a bare 500."""
+    if isinstance(exc, HTTPException):
+        return exc  # Keep normal 404s and friends.
+    app.logger.exception("Unhandled error on %s %s", request.method, request.path)
+    detail = f"{type(exc).__name__}: {exc}"
+    message = f"Something went wrong: {detail}"
+    try:
+        return render_home(error=message), 500
+    except Exception:
+        # Even rendering failed (e.g. the session store is broken).
+        return f"<h1>Something went wrong</h1><p>{detail}</p>", 500
 
 
 @app.route("/")
