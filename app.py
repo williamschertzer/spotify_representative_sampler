@@ -16,6 +16,12 @@ import spotipy
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyOAuth
 
+try:
+    import psycopg2
+    from psycopg2.pool import ThreadedConnectionPool
+except ImportError:  # Local runs without Postgres installed use SQLite.
+    psycopg2 = None
+
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
@@ -48,6 +54,11 @@ HISTORY_DB_PATH = os.getenv(
     "HISTORY_DB_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.db"),
 )
+# A hosted Postgres URL (Neon, Supabase, ...) makes history survive
+# redeploys on hosts with ephemeral filesystems; SQLite is the fallback.
+HISTORY_DATABASE_URL = os.getenv("HISTORY_DATABASE_URL") or os.getenv("DATABASE_URL")
+USE_POSTGRES_HISTORY = bool(HISTORY_DATABASE_URL and psycopg2)
+HISTORY_DB_ERRORS = (sqlite3.Error,) + ((psycopg2.Error,) if psycopg2 else ())
 HISTORY_KIND_LABELS = {
     "analysis": "Library analysis",
     "playlist": "Playlist",
@@ -56,12 +67,38 @@ HISTORY_KIND_LABELS = {
 }
 
 
-def history_db():
-    connection = sqlite3.connect(HISTORY_DB_PATH)
-    connection.row_factory = sqlite3.Row
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+HISTORY_POOL = None
+HISTORY_SCHEMA_READY = False
+
+
+def history_connection():
+    global HISTORY_POOL
+    if USE_POSTGRES_HISTORY:
+        if HISTORY_POOL is None:
+            HISTORY_POOL = ThreadedConnectionPool(0, 4, HISTORY_DATABASE_URL)
+        return HISTORY_POOL.getconn()
+    return sqlite3.connect(HISTORY_DB_PATH)
+
+
+def release_history_connection(connection):
+    if USE_POSTGRES_HISTORY and HISTORY_POOL is not None:
+        HISTORY_POOL.putconn(connection)
+    else:
+        connection.close()
+
+
+def ensure_history_schema(connection):
+    global HISTORY_SCHEMA_READY
+    if HISTORY_SCHEMA_READY:
+        return
+    id_column = (
+        "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY" if USE_POSTGRES_HISTORY
+        else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    )
+    cursor = connection.cursor()
+    cursor.execute(
+        f"""CREATE TABLE IF NOT EXISTS history (
+            id {id_column},
             user_id TEXT NOT NULL,
             kind TEXT NOT NULL,
             ref TEXT,
@@ -70,7 +107,31 @@ def history_db():
             payload TEXT NOT NULL
         )"""
     )
-    return connection
+    connection.commit()
+    HISTORY_SCHEMA_READY = True
+
+
+def history_execute(query, params=(), fetch=False):
+    """Run one statement against whichever history store is configured.
+
+    Queries are written with SQLite's ? placeholders and translated for
+    Postgres; none of them contain a literal question mark.
+    """
+    if USE_POSTGRES_HISTORY:
+        query = query.replace("?", "%s")
+    connection = history_connection()
+    try:
+        ensure_history_schema(connection)
+        cursor = connection.cursor()
+        cursor.execute(query, params)
+        rows = cursor.fetchall() if fetch else None
+        connection.commit()
+        return rows
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        release_history_connection(connection)
 
 
 def save_history(user_id, kind, title, payload, ref=None):
@@ -78,17 +139,16 @@ def save_history(user_id, kind, title, payload, ref=None):
     if not user_id:
         return
     try:
-        with history_db() as connection:
-            connection.execute(
-                "INSERT INTO history (user_id, kind, ref, title, created_at, payload) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    user_id, kind, ref, title,
-                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-                    json.dumps(payload),
-                ),
-            )
-    except sqlite3.Error:
+        history_execute(
+            "INSERT INTO history (user_id, kind, ref, title, created_at, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                user_id, kind, ref, title,
+                datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                json.dumps(payload),
+            ),
+        )
+    except HISTORY_DB_ERRORS:
         pass
 
 
@@ -96,20 +156,20 @@ def list_history(user_id, limit=25):
     if not user_id:
         return []
     try:
-        with history_db() as connection:
-            rows = connection.execute(
-                "SELECT id, kind, title, created_at FROM history "
-                "WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-                (user_id, limit),
-            ).fetchall()
-    except sqlite3.Error:
+        rows = history_execute(
+            "SELECT id, kind, title, created_at FROM history "
+            "WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+            fetch=True,
+        )
+    except HISTORY_DB_ERRORS:
         return []
     return [
         {
-            "id": row["id"],
-            "kind_label": HISTORY_KIND_LABELS.get(row["kind"], row["kind"]),
-            "title": row["title"],
-            "created_at": row["created_at"],
+            "id": row[0],
+            "kind_label": HISTORY_KIND_LABELS.get(row[1], row[1]),
+            "title": row[2],
+            "created_at": row[3],
         }
         for row in rows
     ]
@@ -120,29 +180,29 @@ def find_history(user_id, kind, ref):
     if not user_id or not ref:
         return None
     try:
-        with history_db() as connection:
-            row = connection.execute(
-                "SELECT payload FROM history WHERE user_id = ? AND kind = ? AND ref = ? "
-                "ORDER BY id DESC LIMIT 1",
-                (user_id, kind, ref),
-            ).fetchone()
-    except sqlite3.Error:
+        rows = history_execute(
+            "SELECT payload FROM history WHERE user_id = ? AND kind = ? AND ref = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, kind, ref),
+            fetch=True,
+        )
+    except HISTORY_DB_ERRORS:
         return None
-    return json.loads(row["payload"]) if row else None
+    return json.loads(rows[0][0]) if rows else None
 
 
 def get_history(user_id, entry_id):
     if not user_id:
         return None
     try:
-        with history_db() as connection:
-            row = connection.execute(
-                "SELECT kind, payload FROM history WHERE user_id = ? AND id = ?",
-                (user_id, entry_id),
-            ).fetchone()
-    except sqlite3.Error:
+        rows = history_execute(
+            "SELECT kind, payload FROM history WHERE user_id = ? AND id = ?",
+            (user_id, entry_id),
+            fetch=True,
+        )
+    except HISTORY_DB_ERRORS:
         return None
-    return {"kind": row["kind"], "payload": json.loads(row["payload"])} if row else None
+    return {"kind": rows[0][0], "payload": json.loads(rows[0][1])} if rows else None
 
 
 def current_user_id(sp):
