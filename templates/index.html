@@ -28,6 +28,12 @@
     .vbar { height: 220px; width: 100%; display: flex; align-items: flex-end; }
     .vbar-fill { width: 100%; min-height: 2px; background: var(--spotify); border-radius: .3rem .3rem 0 0; }
     .vlabel { font-size: .65rem; color: var(--muted); height: 2.6rem; margin-top: .4rem; transform: rotate(-45deg); white-space: nowrap; }
+    .vchart-dense .vcount { display: none; }
+    @media (max-width: 576px) {
+      .vchart-medium .vcount { display: none; }
+      .vchart-dense .vlabel, .vchart-medium .vlabel { font-size: .55rem; }
+      .vchart-dense .vcol:nth-child(even) .vlabel { visibility: hidden; }
+    }
     .distribution-row + .distribution-row { margin-top: .75rem; }
     th { white-space: nowrap; }
   </style>
@@ -166,6 +172,7 @@
             <form method="post" action="{{ url_for('analyze_liked') }}">
               <button class="btn btn-dark btn-lg w-100" type="submit">Analyze library</button>
             </form>
+            <a class="btn btn-outline-dark w-100 mt-2" href="{{ url_for('view_latest_history', kind='analysis') }}">Load last analysis</a>
           </div>
         </section>
       </div>
@@ -241,10 +248,11 @@
             {% endfor %}
           </div>
           {% for hist in library_analysis.histograms %}
+            {% set bins = hist.rows | length %}
             <div class="hist-panel {% if not loop.first %}d-none{% endif %}" id="hist-panel-{{ loop.index0 }}">
-              <div class="vchart">
+              <div class="vchart{% if bins > 15 %} vchart-dense{% elif bins > 8 %} vchart-medium{% endif %}">
                 {% for row in hist.rows %}
-                  <div class="vcol" role="img" aria-label="{{ hist.title }} {{ row.label }}: {{ row.count }} songs">
+                  <div class="vcol" role="img" aria-label="{{ hist.title }} {{ row.label }}: {{ row.count }} songs" title="{{ row.label }}: {{ row.count }}">
                     <div class="vcount">{{ row.count }}</div>
                     <div class="vbar"><div class="vbar-fill" style="height: {{ row.percent }}%"></div></div>
                     <div class="vlabel">{{ row.label }}</div>
@@ -307,14 +315,13 @@
           <h2 class="h4">History</h2>
           <div class="table-responsive">
             <table class="table table-hover align-middle mb-0">
-              <thead><tr><th>When</th><th>Type</th><th>Item</th><th></th></tr></thead>
+              <thead><tr><th>When</th><th class="d-none d-sm-table-cell">Type</th><th>Item</th></tr></thead>
               <tbody>
                 {% for entry in history %}
                   <tr>
                     <td class="text-nowrap small text-secondary">{{ entry.created_at }}</td>
-                    <td class="text-nowrap">{{ entry.kind_label }}</td>
-                    <td>{{ entry.title }}</td>
-                    <td><a href="{{ url_for('view_history', entry_id=entry.id) }}">View</a></td>
+                    <td class="text-nowrap d-none d-sm-table-cell">{{ entry.kind_label }}</td>
+                    <td><a href="{{ url_for('view_history', entry_id=entry.id) }}">{{ entry.title }}</a></td>
                   </tr>
                 {% endfor %}
               </tbody>

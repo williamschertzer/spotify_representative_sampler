@@ -1258,6 +1258,26 @@ def view_history(entry_id):
     return render_home(error="That history entry could not be displayed.")
 
 
+@app.route("/history/latest/<kind>")
+def view_latest_history(kind):
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("login"))
+    user_id = current_user_id(sp)
+    try:
+        rows = history_execute(
+            "SELECT id FROM history WHERE user_id = ? AND kind = ? ORDER BY id DESC LIMIT 1",
+            (user_id, kind),
+            fetch=True,
+        )
+    except HISTORY_DB_ERRORS:
+        rows = None
+    if not rows:
+        label = HISTORY_KIND_LABELS.get(kind, "that")
+        return render_home(error=f"No saved {label.lower()} yet.")
+    return view_history(rows[0][0])
+
+
 @app.route("/download_csv")
 def download_csv():
     csv_text = session.get("csv_data")
