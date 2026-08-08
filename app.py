@@ -969,8 +969,6 @@ def create_playlist_route():
     if (popularity_floor is not None and popularity_ceiling is not None
             and popularity_floor > popularity_ceiling):
         return render_home(error="Minimum popularity cannot be greater than maximum popularity.")
-    if source == "liked" and keywords and not LASTFM_API_KEY:
-        return render_home(error="Liked Songs genre analysis needs LASTFM_API_KEY configured in Render.")
 
     # Liked Songs are loaded once. Catalog searches request fresh pages on each
     # replacement round so failed BPM candidates are replaced with new tracks.
