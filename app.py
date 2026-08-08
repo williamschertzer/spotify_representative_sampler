@@ -588,6 +588,54 @@ def choose_tracks(tracks, count):
     return random.sample(tracks, count)
 
 
+def choose_representative_tracks(tracks, count):
+    """Sample so the playlist mirrors the pool's genre proportions."""
+    if len(tracks) <= count:
+        random.shuffle(tracks)
+        return tracks
+    groups = {}
+    for track in tracks:
+        genres = track.get("genres") or ["(no genre)"]
+        groups.setdefault(genres[0], []).append(track)
+    # Largest-remainder allocation keeps proportions while filling every slot.
+    quotas = {genre: len(members) * count / len(tracks) for genre, members in groups.items()}
+    allocation = {genre: int(quota) for genre, quota in quotas.items()}
+    leftover = count - sum(allocation.values())
+    for genre in sorted(groups, key=lambda g: quotas[g] - allocation[g], reverse=True)[:leftover]:
+        allocation[genre] += 1
+    selected = []
+    for genre, members in groups.items():
+        selected.extend(random.sample(members, min(allocation[genre], len(members))))
+    if len(selected) < count:
+        chosen_ids = {track["id"] for track in selected}
+        remaining = [track for track in tracks if track["id"] not in chosen_ids]
+        selected.extend(random.sample(remaining, min(count - len(selected), len(remaining))))
+    random.shuffle(selected)
+    return selected[:count]
+
+
+def build_histogram(values, bucket_size, decimals=0, max_value=None):
+    """Bucket numeric values into labeled counts for bar charts."""
+    values = [value for value in values if value is not None]
+    if max_value is not None:
+        values = [min(value, max_value - 1e-6) for value in values]
+    if not values:
+        return []
+    counts = Counter(int((value + 1e-9) // bucket_size) for value in values)
+    max_count = max(counts.values())
+    rows = []
+    for bucket in range(min(counts), max(counts) + 1):
+        low = bucket * bucket_size
+        high = low + bucket_size
+        count = counts.get(bucket, 0)
+        rows.append({
+            "label": f"{low:.{decimals}f}–{high:.{decimals}f}",
+            "count": count,
+            "percent": round(count / max_count * 100, 1),
+        })
+    return rows
+
+
 def create_playlist(sp, tracks, name, description):
     """Use the current /me and /items Spotify endpoints."""
     playlist = sp._post(
@@ -635,6 +683,7 @@ def render_home(**context):
         "audio_track": None,
         "audio_features": None,
         "playlist_stats": None,
+        "library_analysis": None,
     }
     defaults.update(context)
     return render_template("index.html", **defaults)
@@ -668,17 +717,15 @@ def create_playlist_route():
     source = request.form.get("source", "liked")
     keywords = [word.strip() for word in request.form.get("keywords", "").split(",") if word.strip()]
     try:
-        count = max(1, min(100, int(request.form.get("num_tracks", "20"))))
+        count = max(1, min(500, int(request.form.get("num_tracks", "20"))))
         target_bpm = float(request.form["target_bpm"]) if request.form.get("target_bpm") else None
-        bpm_tolerance = max(0, float(request.form.get("bpm_tolerance", "5")))
+        bpm_tolerance = max(0, min(100, float(request.form.get("bpm_tolerance", "5"))))
     except ValueError:
         return render_home(error="Track count, BPM, and BPM tolerance must be valid numbers.")
 
-    if not keywords:
-        return render_home(error="Add at least one genre or keyword.")
     if target_bpm is None:
         return render_home(error="Enter a target BPM.")
-    if source == "liked" and not LASTFM_API_KEY:
+    if source == "liked" and keywords and not LASTFM_API_KEY:
         return render_home(error="Liked Songs genre analysis needs LASTFM_API_KEY configured in Render.")
 
     # Liked Songs are loaded once. Catalog searches request fresh pages on each
@@ -690,7 +737,8 @@ def create_playlist_route():
     if source == "liked":
         all_liked_tracks = get_liked_tracks(sp)
         random.shuffle(all_liked_tracks)
-        add_lastfm_tags(all_liked_tracks)
+        if LASTFM_API_KEY:
+            add_lastfm_tags(all_liked_tracks)
         # Artist genres cover the whole library in a few batched requests,
         # so keyword filtering is not limited to the capped tag sample.
         add_artist_genres(sp, all_liked_tracks)
@@ -757,7 +805,11 @@ def create_playlist_route():
             retries_used += 1
 
     filtered = list(eligible.values())
-    selected = choose_tracks(filtered, count)
+    if source == "liked" and not keywords:
+        # With no genres requested, mirror the library's own genre mix.
+        selected = choose_representative_tracks(filtered, count)
+    else:
+        selected = choose_tracks(filtered, count)
     playlist_stats = None
     if source == "liked":
         featured_by_id = {track["id"]: track for track in library_featured}
@@ -774,13 +826,16 @@ def create_playlist_route():
         )
     if not selected:
         return render_home(error=(
-            "No songs had both matching keywords and available ReccoBeats features in that BPM range. "
+            "No songs with available audio features matched those filters. "
             "Try broader keywords or a wider BPM tolerance."
         ), playlist_stats=playlist_stats)
 
     label = ", ".join(keywords)
-    playlist_name = request.form.get("playlist_name", "").strip() or f"Discovery: {label}"
-    playlist = create_playlist(sp, selected, playlist_name, f"Created from {source} songs for: {label}")
+    playlist_name = request.form.get("playlist_name", "").strip() or (
+        f"Discovery: {label}" if label else "Discovery mix"
+    )
+    description = f"Created from {source} songs" + (f" for: {label}" if label else "")
+    playlist = create_playlist(sp, selected, playlist_name, description)
     session["csv_data"] = tracks_to_csv_bytes(selected).decode("utf-8")
     return render_home(
         message=(
@@ -842,14 +897,39 @@ def find_obscure_song():
     except RuntimeError as exc:
         feature_error = str(exc)
     return render_home(
-        message=(
-            f"Randomly selected from {len(candidates)} song(s) with popularity "
-            f"from {popularity_floor} to {popularity_ceiling}."
-        ),
         error=feature_error,
         random_track=track,
         obscure_audio_features=feature_rows,
     )
+
+
+@app.route("/analyze_liked", methods=["POST"])
+def analyze_liked():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("login"))
+    tracks = get_liked_tracks(sp)
+    if not tracks:
+        return render_home(error="No Liked Songs were found for this account.")
+    featured = add_reccobeats_features(tracks)
+
+    def feature_values(name):
+        return [track["audio_features"].get(name) for track in featured]
+
+    histograms = [
+        {"title": "Popularity", "rows": build_histogram(
+            [track.get("popularity") for track in tracks], 10, max_value=100)},
+        {"title": "BPM", "rows": build_histogram([track.get("bpm") for track in featured], 10)},
+        {"title": "Danceability", "rows": build_histogram(feature_values("danceability"), 0.1, decimals=1, max_value=1)},
+        {"title": "Energy", "rows": build_histogram(feature_values("energy"), 0.1, decimals=1, max_value=1)},
+        {"title": "Valence", "rows": build_histogram(feature_values("valence"), 0.1, decimals=1, max_value=1)},
+        {"title": "Acousticness", "rows": build_histogram(feature_values("acousticness"), 0.1, decimals=1, max_value=1)},
+    ]
+    return render_home(library_analysis={
+        "total": len(tracks),
+        "featured": len(featured),
+        "histograms": [entry for entry in histograms if entry["rows"]],
+    })
 
 
 @app.route("/track_audio_features", methods=["POST"])
