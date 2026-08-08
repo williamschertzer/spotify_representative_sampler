@@ -416,6 +416,47 @@ def add_reccobeats_features(tracks):
     return enriched
 
 
+def get_reccobeats_recommendations(seed_ids, target_bpm, size):
+    """Ask ReccoBeats for tracks similar to the seeds at the target tempo."""
+    params = {"seeds": ",".join(seed_ids[:5]), "size": size}
+    if target_bpm is not None:
+        params["tempo"] = target_bpm
+    response = requests.get(
+        f"{RECCOBEATS_BASE_URL}/track/recommendation",
+        params=params,
+        timeout=12,
+    )
+    response.raise_for_status()
+    ids = []
+    for item in response.json().get("content", []):
+        spotify_id = spotify_track_id(item.get("href"))
+        if spotify_id:
+            ids.append(spotify_id)
+    return ids
+
+
+def recommend_catalog_tracks(sp, seed_tracks, target_bpm, size, exclude_ids):
+    """Turn ReccoBeats recommendations into full Spotify track objects."""
+    seed_ids = [track["id"] for track in seed_tracks if track.get("id")][:5]
+    if not seed_ids:
+        return []
+    try:
+        rec_ids = get_reccobeats_recommendations(seed_ids, target_bpm, size)
+    except (requests.RequestException, ValueError, TypeError):
+        return []
+    rec_ids = [rid for rid in rec_ids if rid not in exclude_ids and rid not in seed_ids]
+    tracks = []
+    try:
+        for start in range(0, len(rec_ids), 50):
+            response = sp.tracks(rec_ids[start:start + 50]) or {}
+            tracks.extend(
+                track_from_spotify(item) for item in response.get("tracks", []) if item
+            )
+    except SpotifyException:
+        return []
+    return tracks
+
+
 def liked_song_statistics(tracks, featured_tracks, features_attempted, keywords, target_bpm, tolerance):
     """Create funnel counts and compact distributions for the results page."""
     matching = [track for track in tracks if matches_keywords(track, keywords)]
@@ -665,7 +706,8 @@ def create_playlist_route():
     eligible = {}
     checked_ids = set()
     retries_used = 0
-    candidate_batch_size = max(10, min(30, count * 2))
+    seed_pool = []
+    candidate_batch_size = max(10, min(RECCOBEATS_BATCH_SIZE, count * 2))
     for attempt in range(MAX_BPM_RETRIES + 1):
         if len(eligible) >= count:
             break
@@ -673,25 +715,44 @@ def create_playlist_route():
             new_candidates = [
                 track for track in liked_candidates if track.get("id") not in checked_ids
             ][:candidate_batch_size]
-        else:
+        elif attempt == 0 or not seed_pool:
+            # Search seeds the pipeline. Tags are deferred until after the
+            # BPM check so lookups are spent only on likely picks.
             catalog_tracks = search_catalog(
-                sp, keywords, candidate_batch_size, search_round=attempt
+                sp, keywords, candidate_batch_size,
+                search_round=attempt, include_tags=False,
             )
             new_candidates = [
-                track for track in catalog_tracks
-                if matches_keywords(track, keywords) and track.get("id") not in checked_ids
+                track for track in catalog_tracks if track.get("id") not in checked_ids
             ][:candidate_batch_size]
+        else:
+            # Replacement rounds ask ReccoBeats for similar tracks at the
+            # target tempo, so few candidates fail the BPM check.
+            new_candidates = recommend_catalog_tracks(
+                sp, seed_pool, target_bpm, candidate_batch_size, checked_ids
+            )
+            if not new_candidates:
+                # Fall back to deeper search pages on the next round.
+                seed_pool = []
+                continue
 
         if not new_candidates:
             break
         checked_ids.update(track["id"] for track in new_candidates)
         featured_tracks = add_reccobeats_features(new_candidates)
-        for track in featured_tracks:
-            bpm = track.get("bpm")
-            if bpm is None:
-                continue
-            if target_bpm is None or abs(bpm - target_bpm) <= bpm_tolerance:
-                eligible[track["id"]] = track
+        in_range = [
+            track for track in featured_tracks
+            if track.get("bpm") is not None
+            and (target_bpm is None or abs(track["bpm"] - target_bpm) <= bpm_tolerance)
+        ]
+        if source != "liked" and in_range:
+            if LASTFM_API_KEY:
+                add_lastfm_tags(in_range)
+            add_artist_genres(sp, in_range)
+            in_range = [track for track in in_range if matches_keywords(track, keywords)]
+        for track in in_range:
+            eligible[track["id"]] = track
+        seed_pool = list(eligible.values()) or featured_tracks or new_candidates
         if len(eligible) < count and attempt < MAX_BPM_RETRIES:
             retries_used += 1
 

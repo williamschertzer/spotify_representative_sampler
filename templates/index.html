@@ -66,7 +66,7 @@
               <div class="mb-3">
                 <label class="form-label" for="keywords">Genres, Last.fm tags, or keywords</label>
                 <input class="form-control" id="keywords" name="keywords" placeholder="jazz, fusion, late night" required>
-                <div class="form-text">Separate ideas with commas. We match song, artist, album, Spotify artist genres, and ranked Last.fm tags.</div>
+                <div class="form-text">Separate with commas.</div>
               </div>
 
               <div class="row g-3 mb-3">
@@ -83,8 +83,6 @@
                   <input class="form-control" id="num-tracks" name="num_tracks" type="number" min="1" max="100" value="20" required>
                 </div>
               </div>
-              <div class="form-text mb-3">ReccoBeats features are calculated first; only songs within the target BPM ± tolerance can be selected. Up to five replacement rounds are allowed.</div>
-
               <div class="mb-4">
                 <label class="form-label" for="playlist-name">Playlist name</label>
                 <input class="form-control" id="playlist-name" name="playlist_name" placeholder="Optional — we can name it for you">
@@ -99,7 +97,7 @@
             <div class="d-flex align-items-center gap-2 mb-3">
               <span class="applet-number">2</span><h2 class="h4 mb-0">Obscure song finder</h2>
             </div>
-            <p class="text-secondary">Choose a Spotify popularity range, then inspect a random qualifying song's streams and audio features.</p>
+            <p class="text-secondary">Pick a popularity range and get a random matching song.</p>
             <form method="post" action="{{ url_for('find_obscure_song') }}">
               <fieldset class="mb-3">
                 <legend class="form-label fs-6">Search in</legend>
@@ -119,9 +117,7 @@
                   <label class="form-label" for="max-popularity">Maximum popularity</label>
                   <input class="form-control" id="max-popularity" name="max_popularity" type="number" min="0" max="100" step="1" value="20" required>
                 </div>
-                <div class="form-text">The range includes both endpoints. 0 is least popular and 100 is most popular.</div>
               </div>
-              <div class="alert alert-light border small">Each search selects one random qualifying song and uses at most one SpotScraper request. Repeated tracks may use a cached count.</div>
               <button class="btn btn-dark btn-lg w-100" type="submit">Find an obscure song</button>
             </form>
           </div>
@@ -132,7 +128,7 @@
             <div class="d-flex align-items-center gap-2 mb-3">
               <span class="applet-number">3</span><h2 class="h4 mb-0">Track audio features</h2>
             </div>
-            <p class="text-secondary">Paste a Spotify track link to inspect every audio feature ReccoBeats has calculated for that exact recording.</p>
+            <p class="text-secondary">Paste a Spotify track link to see its audio features.</p>
             <form class="row g-3 align-items-end" method="post" action="{{ url_for('track_audio_features') }}">
               <div class="col-md-9">
                 <label class="form-label" for="track-link">Spotify track link</label>
@@ -142,7 +138,6 @@
                 <button class="btn btn-dark btn-lg w-100" type="submit">Analyze track</button>
               </div>
             </form>
-            <div class="form-text mt-2">Track metadata comes from Spotify; acoustic measurements come from ReccoBeats.</div>
           </div>
         </section>
       </div>
@@ -219,7 +214,6 @@
       {% if playlist_stats %}
         <section class="result-card bg-white p-4 mt-4" aria-labelledby="liked-breakdown-title">
           <h2 class="h4" id="liked-breakdown-title">Liked Songs breakdown</h2>
-          <p class="text-secondary">This funnel shows where candidates were removed before playlist selection. Genre matching uses the artist metadata Spotify returned within the safe request limit.</p>
           <div class="row g-3 mb-4">
             <div class="col-6 col-lg-3"><div class="stat-tile"><div class="stat-value">{{ playlist_stats.total_liked }}</div><div class="small text-secondary mt-2">Total Liked Songs</div></div></div>
             <div class="col-6 col-lg-3"><div class="stat-tile"><div class="stat-value">{{ playlist_stats.genre_matching }}</div><div class="small text-secondary mt-2">Matched genre / keywords</div></div></div>
@@ -230,7 +224,7 @@
           <div class="row g-4">
             <div class="col-lg-6">
               <h3 class="h5">BPM distribution</h3>
-              <p class="small text-secondary">ReccoBeats features were available for {{ playlist_stats.features_available }} of {{ playlist_stats.features_attempted }} analyzed Liked Songs{% if playlist_stats.total_liked > playlist_stats.features_attempted %}; this run samples up to {{ playlist_stats.features_attempted }} of {{ playlist_stats.total_liked }}{% endif %}.</p>
+              <p class="small text-secondary">Features available for {{ playlist_stats.features_available }} of {{ playlist_stats.features_attempted }} analyzed songs.</p>
               {% for bucket in playlist_stats.bpm_distribution %}
                 <div class="distribution-row">
                   <div class="d-flex justify-content-between small mb-1"><span>{{ bucket.label }} BPM</span><strong>{{ bucket.count }}</strong></div>
@@ -239,8 +233,8 @@
               {% endfor %}
             </div>
             <div class="col-lg-6">
-              <h3 class="h5">Top Last.fm tags in analyzed Liked Songs</h3>
-              <p class="small text-secondary">Tags were available for {{ playlist_stats.genre_coverage }} of {{ playlist_stats.total_liked }} songs in this run. Counts can overlap and can include genres, eras, locations, and moods.</p>
+              <h3 class="h5">Top tags</h3>
+              <p class="small text-secondary">Tags available for {{ playlist_stats.genre_coverage }} of {{ playlist_stats.total_liked }} songs.</p>
               {% for genre in playlist_stats.genre_distribution %}
                 <div class="distribution-row">
                   <div class="d-flex justify-content-between small mb-1"><span>{{ genre.label }}</span><strong>{{ genre.count }}</strong></div>
