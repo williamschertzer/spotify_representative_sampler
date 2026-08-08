@@ -114,6 +114,21 @@
                   <input class="form-control" id="builder-max-popularity" name="max_popularity" type="number" min="0" max="100" step="1" placeholder="any">
                 </div>
               </div>
+              <details class="mb-3">
+                <summary class="form-label">Audio feature filters</summary>
+                <div class="row g-3 mt-0">
+                  {% for feature in ['danceability', 'energy', 'valence', 'acousticness', 'instrumentalness', 'liveness', 'speechiness'] %}
+                    <div class="col-6 col-md-4">
+                      <label class="form-label text-capitalize mb-1" for="min-{{ feature }}">{{ feature }}</label>
+                      <div class="input-group input-group-sm">
+                        <input class="form-control" id="min-{{ feature }}" name="min_{{ feature }}" type="number" min="0" max="1" step="0.05" placeholder="min" aria-label="Minimum {{ feature }}">
+                        <input class="form-control" id="max-{{ feature }}" name="max_{{ feature }}" type="number" min="0" max="1" step="0.05" placeholder="max" aria-label="Maximum {{ feature }}">
+                      </div>
+                    </div>
+                  {% endfor %}
+                </div>
+                <div class="form-text mt-2">0–1 scales. Leave blank to skip.</div>
+              </details>
               <div class="mb-4">
                 <label class="form-label" for="playlist-name">Playlist name</label>
                 <input class="form-control" id="playlist-name" name="playlist_name" placeholder="Optional — we can name it for you">

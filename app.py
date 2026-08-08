@@ -41,6 +41,10 @@ RECCOBEATS_FEATURE_CACHE = {}
 RECCOBEATS_BATCH_SIZE = 40  # The audio-features endpoint accepts at most 40 ids.
 MAX_BPM_RETRIES = 5
 MAX_LIBRARY_BPM_ANALYSIS = 40
+FEATURE_FILTER_NAMES = (
+    "danceability", "energy", "valence", "acousticness",
+    "instrumentalness", "liveness", "speechiness",
+)
 PITCH_CLASSES = (
     "C", "C♯ / D♭", "D", "D♯ / E♭", "E", "F",
     "F♯ / G♭", "G", "G♯ / A♭", "A", "A♯ / B♭", "B",
@@ -600,11 +604,12 @@ def add_reccobeats_features(tracks):
     return enriched
 
 
-def get_reccobeats_recommendations(seed_ids, target_bpm, size):
-    """Ask ReccoBeats for tracks similar to the seeds at the target tempo."""
+def get_reccobeats_recommendations(seed_ids, target_bpm, size, feature_targets=None):
+    """Ask ReccoBeats for tracks similar to the seeds at the target features."""
     params = {"seeds": ",".join(seed_ids[:5]), "size": size}
     if target_bpm is not None:
         params["tempo"] = target_bpm
+    params.update(feature_targets or {})
     response = requests.get(
         f"{RECCOBEATS_BASE_URL}/track/recommendation",
         params=params,
@@ -619,7 +624,7 @@ def get_reccobeats_recommendations(seed_ids, target_bpm, size):
     return ids
 
 
-def recommend_catalog_tracks(sp, seed_tracks, target_bpm, size, exclude_ids):
+def recommend_catalog_tracks(sp, seed_tracks, target_bpm, size, exclude_ids, feature_targets=None):
     """Turn ReccoBeats recommendations into full Spotify track objects."""
     # Sampling different seeds each round yields fresh recommendations
     # instead of re-fetching near-duplicates of the first call.
@@ -628,7 +633,7 @@ def recommend_catalog_tracks(sp, seed_tracks, target_bpm, size, exclude_ids):
     if not seed_ids:
         return []
     try:
-        rec_ids = get_reccobeats_recommendations(seed_ids, target_bpm, size)
+        rec_ids = get_reccobeats_recommendations(seed_ids, target_bpm, size, feature_targets)
     except (requests.RequestException, ValueError, TypeError):
         return []
     rec_ids = [rid for rid in rec_ids if rid not in exclude_ids and rid not in seed_ids]
@@ -767,6 +772,22 @@ def matches_keywords(track, keywords):
         re.search(rf"(?<![\w-]){re.escape(keyword.lower().strip())}(?![\w-])", haystack)
         for keyword in keywords
     )
+
+
+def passes_audio_filters(track, target_bpm, bpm_tolerance, feature_ranges):
+    """Check the BPM window and any 0-1 feature ranges against a track."""
+    if target_bpm is not None:
+        bpm = track.get("bpm")
+        if bpm is None or abs(bpm - target_bpm) > bpm_tolerance:
+            return False
+    features = track.get("audio_features") or {}
+    for name, (low, high) in feature_ranges.items():
+        value = features.get(name)
+        if value is None:
+            return False
+        if (low is not None and value < low) or (high is not None and value > high):
+            return False
+    return True
 
 
 def within_popularity(track, floor, ceiling):
@@ -970,6 +991,27 @@ def create_playlist_route():
             and popularity_floor > popularity_ceiling):
         return render_home(error="Minimum popularity cannot be greater than maximum popularity.")
 
+    feature_ranges = {}
+    for name in FEATURE_FILTER_NAMES:
+        try:
+            low = optional_number(f"min_{name}", float)
+            high = optional_number(f"max_{name}", float)
+        except ValueError:
+            return render_home(error=f"{name.title()} filter values must be numbers.")
+        if low is None and high is None:
+            continue
+        if any(bound is not None and not 0 <= bound <= 1 for bound in (low, high)):
+            return render_home(error=f"{name.title()} values must be between 0 and 1.")
+        if low is not None and high is not None and low > high:
+            return render_home(error=f"Minimum {name} cannot be greater than maximum.")
+        feature_ranges[name] = (low, high)
+    # Recommendations aim for the middle of each requested range.
+    feature_targets = {
+        name: round((low + high) / 2, 3) if low is not None and high is not None
+        else (low if low is not None else high)
+        for name, (low, high) in feature_ranges.items()
+    }
+
     # Liked Songs are loaded once. Catalog searches request fresh pages on each
     # replacement round so failed BPM candidates are replaced with new tracks.
     liked_candidates = []
@@ -1024,9 +1066,10 @@ def create_playlist_route():
             ][:candidate_batch_size]
         else:
             # Replacement rounds ask ReccoBeats for similar tracks at the
-            # target tempo, so few candidates fail the BPM check.
+            # target features, so few candidates fail the audio checks.
             new_candidates = recommend_catalog_tracks(
-                sp, seed_pool, target_bpm, candidate_batch_size, checked_ids
+                sp, seed_pool, target_bpm, candidate_batch_size, checked_ids,
+                feature_targets,
             )
             if not new_candidates:
                 # Fall back to deeper search pages on the next round.
@@ -1041,14 +1084,13 @@ def create_playlist_route():
         added = 0
         if new_candidates:
             featured_tracks = add_reccobeats_features(new_candidates)
-            if target_bpm is None:
-                # Without a BPM target, songs missing features stay eligible.
+            if target_bpm is None and not feature_ranges:
+                # Without audio filters, songs missing features stay eligible.
                 in_range = new_candidates
             else:
                 in_range = [
                     track for track in featured_tracks
-                    if track.get("bpm") is not None
-                    and abs(track["bpm"] - target_bpm) <= bpm_tolerance
+                    if passes_audio_filters(track, target_bpm, bpm_tolerance, feature_ranges)
                 ]
             if source != "liked" and in_range:
                 if LASTFM_API_KEY:
