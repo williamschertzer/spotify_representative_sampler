@@ -22,6 +22,12 @@
     .stat-value { font-size: 1.8rem; font-weight: 750; line-height: 1; }
     .bar-track { height: .65rem; background: #e5ebe6; border-radius: 999px; overflow: hidden; }
     .bar-fill { height: 100%; min-width: 2px; background: var(--spotify); border-radius: inherit; }
+    .vchart { display: flex; align-items: flex-end; gap: .3rem; margin-top: 1.75rem; }
+    .vcol { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+    .vcount { font-size: .7rem; color: var(--muted); }
+    .vbar { height: 220px; width: 100%; display: flex; align-items: flex-end; }
+    .vbar-fill { width: 100%; min-height: 2px; background: var(--spotify); border-radius: .3rem .3rem 0 0; }
+    .vlabel { font-size: .65rem; color: var(--muted); height: 2.6rem; margin-top: .4rem; transform: rotate(-45deg); white-space: nowrap; }
     .distribution-row + .distribution-row { margin-top: .75rem; }
     th { white-space: nowrap; }
   </style>
@@ -228,19 +234,25 @@
         <section class="result-card bg-white p-4 mt-4" id="library-analysis-results" tabindex="-1">
           <h2 class="h4">Liked Songs analysis</h2>
           <p class="small text-secondary">Audio features available for {{ library_analysis.featured }} of {{ library_analysis.total }} songs.</p>
-          <div class="row g-4">
+          <div class="btn-group flex-wrap" role="group" aria-label="Choose histogram">
             {% for hist in library_analysis.histograms %}
-              <div class="col-md-6 col-lg-4">
-                <h3 class="h6">{{ hist.title }}</h3>
+              <input class="btn-check hist-toggle" type="radio" name="hist_toggle" id="hist-toggle-{{ loop.index0 }}" data-panel="hist-panel-{{ loop.index0 }}" {% if loop.first %}checked{% endif %}>
+              <label class="btn btn-outline-dark btn-sm" for="hist-toggle-{{ loop.index0 }}">{{ hist.title }}</label>
+            {% endfor %}
+          </div>
+          {% for hist in library_analysis.histograms %}
+            <div class="hist-panel {% if not loop.first %}d-none{% endif %}" id="hist-panel-{{ loop.index0 }}">
+              <div class="vchart">
                 {% for row in hist.rows %}
-                  <div class="distribution-row">
-                    <div class="d-flex justify-content-between small mb-1"><span>{{ row.label }}</span><strong>{{ row.count }}</strong></div>
-                    <div class="bar-track" role="img" aria-label="{{ hist.title }} {{ row.label }}: {{ row.count }} songs"><div class="bar-fill" style="width: {{ row.percent }}%"></div></div>
+                  <div class="vcol" role="img" aria-label="{{ hist.title }} {{ row.label }}: {{ row.count }} songs">
+                    <div class="vcount">{{ row.count }}</div>
+                    <div class="vbar"><div class="vbar-fill" style="height: {{ row.percent }}%"></div></div>
+                    <div class="vlabel">{{ row.label }}</div>
                   </div>
                 {% endfor %}
               </div>
-            {% endfor %}
-          </div>
+            </div>
+          {% endfor %}
         </section>
       {% endif %}
 
@@ -334,6 +346,14 @@
       libraryAnalysisResults.scrollIntoView({ behavior: 'auto', block: 'start' });
       libraryAnalysisResults.focus({ preventScroll: true });
     }
+
+    document.querySelectorAll('.hist-toggle').forEach((radio) => {
+      radio.addEventListener('change', () => {
+        document.querySelectorAll('.hist-panel').forEach((panel) => {
+          panel.classList.toggle('d-none', panel.id !== radio.dataset.panel);
+        });
+      });
+    });
   </script>
 </body>
 </html>
