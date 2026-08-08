@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import math
 import os
 import random
 import re
@@ -810,6 +811,37 @@ def choose_representative_tracks(tracks, count):
     return selected[:count]
 
 
+def axis_ticks(max_count, target_divisions=5):
+    """Pick a rounded axis maximum and tick values for a count axis."""
+    if max_count <= 0:
+        return 1, [1, 0]
+    raw_step = max_count / target_divisions
+    if raw_step <= 1:
+        step = 1
+    else:
+        magnitude = 10 ** math.floor(math.log10(raw_step))
+        step = next(int(m * magnitude) for m in (1, 2, 5, 10) if m * magnitude >= raw_step)
+    axis_max = math.ceil(max_count / step) * step
+    return axis_max, list(range(axis_max, -1, -step))
+
+
+def with_axis(library_analysis):
+    """Scale histogram bars to a rounded y axis instead of the tallest bar.
+
+    Applied at render time so history entries saved before the axis
+    existed replay with one as well.
+    """
+    if not library_analysis:
+        return library_analysis
+    for hist in library_analysis.get("histograms", []):
+        counts = [row.get("count", 0) for row in hist.get("rows", [])]
+        axis_max, ticks = axis_ticks(max(counts, default=0))
+        hist["ticks"] = ticks
+        for row in hist.get("rows", []):
+            row["percent"] = round(row.get("count", 0) / axis_max * 100, 1)
+    return library_analysis
+
+
 def build_histogram(values, bucket_size, decimals=0, max_value=None):
     """Bucket numeric values into labeled counts for bar charts."""
     values = [value for value in values if value is not None]
@@ -887,6 +919,7 @@ def render_home(**context):
         "library_analysis": None,
     }
     defaults.update(context)
+    defaults["library_analysis"] = with_axis(defaults["library_analysis"])
     return render_template("index.html", **defaults)
 
 

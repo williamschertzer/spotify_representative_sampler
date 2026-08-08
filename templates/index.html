@@ -22,17 +22,26 @@
     .stat-value { font-size: 1.8rem; font-weight: 750; line-height: 1; }
     .bar-track { height: .65rem; background: #e5ebe6; border-radius: 999px; overflow: hidden; }
     .bar-fill { height: 100%; min-width: 2px; background: var(--spotify); border-radius: inherit; }
-    .vchart { display: flex; align-items: flex-end; gap: .3rem; margin-top: 1.75rem; }
-    .vcol { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; min-width: 0; }
-    .vcount { font-size: .7rem; color: var(--muted); }
-    .vbar { height: 220px; width: 100%; display: flex; align-items: flex-end; }
-    .vbar-fill { width: 100%; min-height: 2px; background: var(--spotify); border-radius: .3rem .3rem 0 0; }
-    .vlabel { font-size: .65rem; color: var(--muted); height: 2.6rem; margin-top: .4rem; transform: rotate(-45deg); white-space: nowrap; }
-    .vchart-dense .vcount { display: none; }
+    .hist-nav { display: inline-flex; flex-wrap: wrap; gap: .25rem; background: #e8eee9; border-radius: 999px; padding: .3rem; }
+    .hist-nav label { border-radius: 999px; padding: .35rem 1rem; font-size: .9rem; font-weight: 600; color: var(--muted); cursor: pointer; transition: color .15s; }
+    .hist-nav label:hover { color: var(--ink); }
+    .hist-nav .btn-check:checked + label { background: #fff; color: var(--ink); box-shadow: 0 2px 8px rgba(20, 35, 25, .18); }
+    .vplot { display: flex; gap: .6rem; margin-top: 1.5rem; }
+    .vaxis { display: flex; flex-direction: column; justify-content: space-between; height: 220px; text-align: right; font-size: .7rem; color: var(--muted); line-height: 1; }
+    .vaxis div { transform: translateY(50%); }
+    .vaxis div:first-child { transform: none; }
+    .vbody { flex: 1 1 0; min-width: 0; }
+    .varea { position: relative; height: 220px; }
+    .vgrid { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; }
+    .vgrid div { border-top: 1px solid #e7ede8; height: 0; }
+    .vchart { position: relative; display: flex; align-items: flex-end; gap: .3rem; height: 100%; }
+    .vbar-fill { flex: 1 1 0; min-width: 0; background: var(--spotify); border-radius: .3rem .3rem 0 0; }
+    .vlabels { display: flex; gap: .3rem; margin-top: .4rem; }
+    .vlabel { flex: 1 1 0; min-width: 0; font-size: .65rem; color: var(--muted); height: 2.4rem; transform: rotate(-45deg); white-space: nowrap; }
+    .vplot-dense .vchart, .vplot-dense .vlabels { gap: .15rem; }
     @media (max-width: 576px) {
-      .vchart-medium .vcount { display: none; }
-      .vchart-dense .vlabel, .vchart-medium .vlabel { font-size: .55rem; }
-      .vchart-dense .vcol:nth-child(even) .vlabel { visibility: hidden; }
+      .vplot-dense .vlabel { font-size: .55rem; }
+      .vplot-dense .vlabel:nth-child(even) { visibility: hidden; }
     }
     .distribution-row + .distribution-row { margin-top: .75rem; }
     th { white-space: nowrap; }
@@ -241,23 +250,35 @@
         <section class="result-card bg-white p-4 mt-4" id="library-analysis-results" tabindex="-1">
           <h2 class="h4">Liked Songs analysis</h2>
           <p class="small text-secondary">Audio features available for {{ library_analysis.featured }} of {{ library_analysis.total }} songs.</p>
-          <div class="btn-group flex-wrap" role="group" aria-label="Choose histogram">
+          <div class="hist-nav" role="group" aria-label="Choose histogram">
             {% for hist in library_analysis.histograms %}
               <input class="btn-check hist-toggle" type="radio" name="hist_toggle" id="hist-toggle-{{ loop.index0 }}" data-panel="hist-panel-{{ loop.index0 }}" {% if loop.first %}checked{% endif %}>
-              <label class="btn btn-outline-dark btn-sm" for="hist-toggle-{{ loop.index0 }}">{{ hist.title }}</label>
+              <label for="hist-toggle-{{ loop.index0 }}">{{ hist.title }}</label>
             {% endfor %}
           </div>
           {% for hist in library_analysis.histograms %}
-            {% set bins = hist.rows | length %}
             <div class="hist-panel {% if not loop.first %}d-none{% endif %}" id="hist-panel-{{ loop.index0 }}">
-              <div class="vchart{% if bins > 15 %} vchart-dense{% elif bins > 8 %} vchart-medium{% endif %}">
-                {% for row in hist.rows %}
-                  <div class="vcol" role="img" aria-label="{{ hist.title }} {{ row.label }}: {{ row.count }} songs" title="{{ row.label }}: {{ row.count }}">
-                    <div class="vcount">{{ row.count }}</div>
-                    <div class="vbar"><div class="vbar-fill" style="height: {{ row.percent }}%"></div></div>
-                    <div class="vlabel">{{ row.label }}</div>
+              <div class="vplot{% if hist.rows | length > 15 %} vplot-dense{% endif %}">
+                <div class="vaxis" aria-hidden="true">
+                  {% for tick in hist.ticks %}<div>{{ tick }}</div>{% endfor %}
+                </div>
+                <div class="vbody">
+                  <div class="varea">
+                    <div class="vgrid" aria-hidden="true">
+                      {% for tick in hist.ticks %}<div></div>{% endfor %}
+                    </div>
+                    <div class="vchart">
+                      {% for row in hist.rows %}
+                        <div class="vbar-fill" style="height: {{ row.percent }}%" role="img"
+                             aria-label="{{ hist.title }} {{ row.label }}: {{ row.count }} songs"
+                             title="{{ row.label }}: {{ row.count }}"></div>
+                      {% endfor %}
+                    </div>
                   </div>
-                {% endfor %}
+                  <div class="vlabels">
+                    {% for row in hist.rows %}<div class="vlabel">{{ row.label }}</div>{% endfor %}
+                  </div>
+                </div>
               </div>
             </div>
           {% endfor %}
