@@ -28,6 +28,7 @@ STREAM_COUNT_CACHE = {}
 OBSCURE_CANDIDATE_POOL_SIZE = 80
 RECCOBEATS_BASE_URL = "https://api.reccobeats.com/v1"
 RECCOBEATS_FEATURE_CACHE = {}
+RECCOBEATS_BATCH_SIZE = 40  # The audio-features endpoint accepts at most 40 ids.
 MAX_BPM_RETRIES = 5
 MAX_LIBRARY_BPM_ANALYSIS = 40
 PITCH_CLASSES = (
@@ -265,45 +266,38 @@ def add_audio_features(sp, tracks):
     return bool(bpm_by_id)
 
 
-def get_reccobeats_audio_features(track, spotify_id, max_search_pages=8):
-    """Resolve an exact Spotify recording and return ReccoBeats audio features."""
-    # Titles can have covers and remasters. Comparing the Spotify ID in href
-    # guarantees that we choose the exact recording supplied by the user.
-    match = None
-    page = 0
-    total_pages = 1
-    try:
-        while page < min(total_pages, max_search_pages) and not match:
-            search_response = requests.get(
-                f"{RECCOBEATS_BASE_URL}/track/search",
-                params={"searchText": track["name"], "page": page},
-                timeout=12,
-            )
-            search_response.raise_for_status()
-            payload = search_response.json()
-            results = payload.get("content", [])
-            match = next(
-                (result for result in results if spotify_track_id(result.get("href")) == spotify_id),
-                None,
-            )
-            total_pages = max(1, int(payload.get("totalPages", 1)))
-            page += 1
-    except (requests.RequestException, ValueError, TypeError) as exc:
-        raise RuntimeError("ReccoBeats could not search for this track. Please try again later.") from exc
-    if not match:
-        raise RuntimeError("This exact Spotify recording was not found in the ReccoBeats catalog.")
+def fetch_reccobeats_features_batch(spotify_ids):
+    """Fetch audio features for many Spotify IDs, keyed back by Spotify ID.
 
-    try:
-        feature_response = requests.get(
-            f"{RECCOBEATS_BASE_URL}/track/{match['id']}/audio-features",
+    Each result's href holds the exact Spotify recording, so no title search
+    or fuzzy matching is needed. IDs missing from the catalog are simply
+    absent from the returned mapping.
+    """
+    features_by_id = {}
+    for start in range(0, len(spotify_ids), RECCOBEATS_BATCH_SIZE):
+        chunk = spotify_ids[start:start + RECCOBEATS_BATCH_SIZE]
+        response = requests.get(
+            f"{RECCOBEATS_BASE_URL}/audio-features",
+            params={"ids": ",".join(chunk)},
             timeout=12,
         )
-        feature_response.raise_for_status()
-        features = feature_response.json()
-    except (requests.RequestException, ValueError, KeyError) as exc:
-        raise RuntimeError("ReccoBeats could not return audio features for this track.") from exc
-    if not isinstance(features, dict) or not features:
-        raise RuntimeError("ReccoBeats returned an empty audio-feature result for this track.")
+        response.raise_for_status()
+        payload = response.json()
+        for features in payload.get("content", []):
+            spotify_id = spotify_track_id(features.get("href"))
+            if spotify_id and isinstance(features, dict):
+                features_by_id[spotify_id] = features
+    return features_by_id
+
+
+def get_reccobeats_audio_features(spotify_id):
+    """Return ReccoBeats audio features for one exact Spotify recording."""
+    try:
+        features = fetch_reccobeats_features_batch([spotify_id]).get(spotify_id)
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        raise RuntimeError("ReccoBeats could not return audio features for this track. Please try again later.") from exc
+    if not features:
+        raise RuntimeError("This exact Spotify recording was not found in the ReccoBeats catalog.")
     return features
 
 
@@ -364,31 +358,27 @@ def display_audio_features(features):
     return rows
 
 
-def add_reccobeats_features(tracks, max_search_pages=8, workers=8):
-    """Attach ReccoBeats features to tracks concurrently and skip unavailable songs."""
-    def fetch(track):
-        track_id = track.get("id")
-        if not track_id:
-            return track, None
-        if track_id not in RECCOBEATS_FEATURE_CACHE:
-            try:
-                features = get_reccobeats_audio_features(track, track_id, max_search_pages)
-                RECCOBEATS_FEATURE_CACHE[track_id] = features
-            except RuntimeError:
-                features = None
-        else:
-            features = RECCOBEATS_FEATURE_CACHE[track_id]
-        return track, features
+def add_reccobeats_features(tracks):
+    """Attach batch ReccoBeats features to tracks and skip unavailable songs."""
+    uncached_ids = [
+        track["id"] for track in tracks
+        if track.get("id") and track["id"] not in RECCOBEATS_FEATURE_CACHE
+    ]
+    # A failed chunk only loses its own 40 tracks; the rest still resolve.
+    for start in range(0, len(uncached_ids), RECCOBEATS_BATCH_SIZE):
+        chunk = uncached_ids[start:start + RECCOBEATS_BATCH_SIZE]
+        try:
+            RECCOBEATS_FEATURE_CACHE.update(fetch_reccobeats_features_batch(chunk))
+        except (requests.RequestException, ValueError, TypeError):
+            continue
 
     enriched = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(fetch, track) for track in tracks]
-        for future in as_completed(futures):
-            track, features = future.result()
-            if features:
-                track["audio_features"] = features
-                track["bpm"] = features.get("tempo")
-                enriched.append(track)
+    for track in tracks:
+        features = RECCOBEATS_FEATURE_CACHE.get(track.get("id"))
+        if features:
+            track["audio_features"] = features
+            track["bpm"] = features.get("tempo")
+            enriched.append(track)
     return enriched
 
 
@@ -608,15 +598,12 @@ def create_playlist_route():
         add_lastfm_tags(all_liked_tracks)
         liked_candidates = [track for track in all_liked_tracks if matches_keywords(track, keywords)]
 
-        # A full ReccoBeats resolution can require multiple searches per song.
-        # Analyze a broad library sample with one search page per track, and
-        # clearly report coverage on the results page.
+        # Batch feature lookups cover 40 songs per request; the cap keeps the
+        # library sample bounded, and coverage is reported on the results page.
         nonmatching = [track for track in all_liked_tracks if track not in liked_candidates]
         analysis_pool = (liked_candidates + nonmatching)[:MAX_LIBRARY_BPM_ANALYSIS]
         library_analysis_count = len(analysis_pool)
-        library_featured = add_reccobeats_features(
-            analysis_pool, max_search_pages=1, workers=6
-        )
+        library_featured = add_reccobeats_features(analysis_pool)
 
     eligible = {}
     checked_ids = set()
@@ -733,7 +720,7 @@ def find_obscure_song():
     feature_rows = None
     feature_error = None
     try:
-        feature_rows = display_audio_features(get_reccobeats_audio_features(track, track["id"]))
+        feature_rows = display_audio_features(get_reccobeats_audio_features(track["id"]))
     except RuntimeError as exc:
         feature_error = str(exc)
     return render_home(
@@ -757,7 +744,7 @@ def track_audio_features():
         return render_home(error="Enter a valid Spotify track link, URI, or 22-character track ID.")
     try:
         track = track_from_spotify(sp.track(track_id))
-        features = get_reccobeats_audio_features(track, track_id)
+        features = get_reccobeats_audio_features(track_id)
     except SpotifyException as exc:
         return render_home(error=f"Spotify could not load that track: {exc.msg or 'check the link and try again.'}")
     except RuntimeError as exc:
