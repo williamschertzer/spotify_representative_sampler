@@ -394,17 +394,26 @@ def display_audio_features(features):
 
 def add_reccobeats_features(tracks):
     """Attach batch ReccoBeats features to tracks and skip unavailable songs."""
-    uncached_ids = [
+    uncached_ids = list(dict.fromkeys(
         track["id"] for track in tracks
         if track.get("id") and track["id"] not in RECCOBEATS_FEATURE_CACHE
+    ))
+    chunks = [
+        uncached_ids[start:start + RECCOBEATS_BATCH_SIZE]
+        for start in range(0, len(uncached_ids), RECCOBEATS_BATCH_SIZE)
     ]
-    # A failed chunk only loses its own 40 tracks; the rest still resolve.
-    for start in range(0, len(uncached_ids), RECCOBEATS_BATCH_SIZE):
-        chunk = uncached_ids[start:start + RECCOBEATS_BATCH_SIZE]
-        try:
-            RECCOBEATS_FEATURE_CACHE.update(fetch_reccobeats_features_batch(chunk))
-        except (requests.RequestException, ValueError, TypeError):
-            continue
+    # Chunks run in parallel; a failed chunk only loses its own 40 tracks.
+    if chunks:
+        with ThreadPoolExecutor(max_workers=min(8, len(chunks))) as executor:
+            futures = [
+                executor.submit(fetch_reccobeats_features_batch, chunk)
+                for chunk in chunks
+            ]
+            for future in as_completed(futures):
+                try:
+                    RECCOBEATS_FEATURE_CACHE.update(future.result())
+                except (requests.RequestException, ValueError, TypeError):
+                    continue
 
     enriched = []
     for track in tracks:
