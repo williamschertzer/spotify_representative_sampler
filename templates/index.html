@@ -22,6 +22,13 @@
     .stat-value { font-size: 1.8rem; font-weight: 750; line-height: 1; }
     .bar-track { height: .65rem; background: #e5ebe6; border-radius: 999px; overflow: hidden; }
     .bar-fill { height: 100%; min-width: 2px; background: var(--spotify); border-radius: inherit; }
+    .range-box { width: 4.6rem; flex: none; }
+    .dual-range { position: relative; height: 1.6rem; }
+    .dual-range input[type=range] { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; appearance: none; -webkit-appearance: none; background: none; pointer-events: none; }
+    .dual-range input[type=range]::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; pointer-events: auto; width: 1.05rem; height: 1.05rem; border-radius: 50%; background: var(--spotify); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(16, 19, 17, .35); cursor: pointer; }
+    .dual-range input[type=range]::-moz-range-thumb { pointer-events: auto; width: .95rem; height: .95rem; border-radius: 50%; background: var(--spotify); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(16, 19, 17, .35); cursor: pointer; }
+    .dual-track { position: absolute; top: 50%; transform: translateY(-50%); left: 0; right: 0; height: .35rem; border-radius: 999px; background: #e5ebe6; }
+    .dual-fill { position: absolute; top: 0; bottom: 0; border-radius: inherit; background: var(--spotify); opacity: .55; }
     .hist-nav { display: inline-flex; flex-wrap: wrap; gap: .25rem; background: #e8eee9; border-radius: 999px; padding: .3rem; }
     .hist-nav label { border-radius: 999px; padding: .35rem 1rem; font-size: .9rem; font-weight: 600; color: var(--muted); cursor: pointer; transition: color .15s; }
     .hist-nav label:hover { color: var(--ink); }
@@ -90,7 +97,25 @@
                 <div class="form-text">Optional — separate with commas.</div>
               </div>
 
+              {% macro range_filter(label, name, minv, maxv, step) %}
+                <div class="range-filter">
+                  <label class="form-label text-capitalize mb-1" for="min-{{ name }}">{{ label }}</label>
+                  <div class="d-flex align-items-center gap-2">
+                    <input class="form-control form-control-sm range-box range-min-box" id="min-{{ name }}" name="min_{{ name }}" type="number" min="{{ minv }}" max="{{ maxv }}" step="{{ step }}" placeholder="{{ minv }}" aria-label="Minimum {{ label }}">
+                    <div class="dual-range flex-grow-1">
+                      <div class="dual-track"><div class="dual-fill"></div></div>
+                      <input type="range" class="dual-lo" min="{{ minv }}" max="{{ maxv }}" step="{{ step }}" value="{{ minv }}" aria-label="{{ label }} lower bound">
+                      <input type="range" class="dual-hi" min="{{ minv }}" max="{{ maxv }}" step="{{ step }}" value="{{ maxv }}" aria-label="{{ label }} upper bound">
+                    </div>
+                    <input class="form-control form-control-sm range-box range-max-box" id="max-{{ name }}" name="max_{{ name }}" type="number" min="{{ minv }}" max="{{ maxv }}" step="{{ step }}" placeholder="{{ maxv }}" aria-label="Maximum {{ label }}">
+                  </div>
+                </div>
+              {% endmacro %}
               <div class="row g-3 mb-3">
+                <div class="col-sm-4">
+                  <label class="form-label" for="num-tracks">Songs</label>
+                  <input class="form-control" id="num-tracks" name="num_tracks" type="number" min="1" max="500" value="20" required>
+                </div>
                 <div class="col-sm-4">
                   <label class="form-label" for="target-bpm">Target BPM</label>
                   <input class="form-control" id="target-bpm" name="target_bpm" type="number" min="30" max="250" step="1" placeholder="any">
@@ -99,35 +124,20 @@
                   <label class="form-label" for="bpm-tolerance">BPM ±</label>
                   <input class="form-control" id="bpm-tolerance" name="bpm_tolerance" type="number" min="0" max="100" value="5">
                 </div>
-                <div class="col-sm-4">
-                  <label class="form-label" for="num-tracks">Songs</label>
-                  <input class="form-control" id="num-tracks" name="num_tracks" type="number" min="1" max="500" value="20" required>
-                </div>
               </div>
-              <div class="row g-3 mb-3">
-                <div class="col-sm-4">
-                  <label class="form-label" for="builder-min-popularity">Min popularity</label>
-                  <input class="form-control" id="builder-min-popularity" name="min_popularity" type="number" min="0" max="100" step="1" placeholder="any">
-                </div>
-                <div class="col-sm-4">
-                  <label class="form-label" for="builder-max-popularity">Max popularity</label>
-                  <input class="form-control" id="builder-max-popularity" name="max_popularity" type="number" min="0" max="100" step="1" placeholder="any">
-                </div>
+              <div class="mb-3">
+                {{ range_filter('Popularity', 'popularity', 0, 100, 1) }}
               </div>
               <details class="mb-3">
                 <summary class="form-label">Audio feature filters</summary>
                 <div class="row g-3 mt-0">
                   {% for feature in ['danceability', 'energy', 'valence', 'acousticness', 'instrumentalness', 'liveness', 'speechiness'] %}
-                    <div class="col-6 col-md-4">
-                      <label class="form-label text-capitalize mb-1" for="min-{{ feature }}">{{ feature }}</label>
-                      <div class="input-group input-group-sm">
-                        <input class="form-control" id="min-{{ feature }}" name="min_{{ feature }}" type="number" min="0" max="1" step="0.05" placeholder="min" aria-label="Minimum {{ feature }}">
-                        <input class="form-control" id="max-{{ feature }}" name="max_{{ feature }}" type="number" min="0" max="1" step="0.05" placeholder="max" aria-label="Maximum {{ feature }}">
-                      </div>
+                    <div class="col-12">
+                      {{ range_filter(feature, feature, 0, 1, 0.05) }}
                     </div>
                   {% endfor %}
                 </div>
-                <div class="form-text mt-2">0–1 scales. Leave blank to skip.</div>
+                <div class="form-text mt-2">Full range means no filter.</div>
               </details>
               <div class="mb-4">
                 <label class="form-label" for="playlist-name">Playlist name</label>
@@ -410,6 +420,46 @@
       libraryAnalysisResults.scrollIntoView({ behavior: 'auto', block: 'start' });
       libraryAnalysisResults.focus({ preventScroll: true });
     }
+
+    document.querySelectorAll('.range-filter').forEach((filter) => {
+      const lo = filter.querySelector('.dual-lo');
+      const hi = filter.querySelector('.dual-hi');
+      const loBox = filter.querySelector('.range-min-box');
+      const hiBox = filter.querySelector('.range-max-box');
+      const fill = filter.querySelector('.dual-fill');
+      const min = parseFloat(lo.min);
+      const max = parseFloat(lo.max);
+
+      const paint = () => {
+        const a = parseFloat(lo.value);
+        const b = parseFloat(hi.value);
+        fill.style.left = ((a - min) / (max - min) * 100) + '%';
+        fill.style.right = (100 - (b - min) / (max - min) * 100) + '%';
+      };
+      // A slider parked at its end means "no bound", so its box stays blank.
+      const fromSliders = () => {
+        loBox.value = parseFloat(lo.value) <= min ? '' : lo.value;
+        hiBox.value = parseFloat(hi.value) >= max ? '' : hi.value;
+        paint();
+      };
+      lo.addEventListener('input', () => {
+        if (parseFloat(lo.value) > parseFloat(hi.value)) lo.value = hi.value;
+        fromSliders();
+      });
+      hi.addEventListener('input', () => {
+        if (parseFloat(hi.value) < parseFloat(lo.value)) hi.value = lo.value;
+        fromSliders();
+      });
+      const fromBoxes = () => {
+        lo.value = loBox.value === '' ? min : loBox.value;
+        hi.value = hiBox.value === '' ? max : hiBox.value;
+        if (parseFloat(lo.value) > parseFloat(hi.value)) lo.value = hi.value;
+        paint();
+      };
+      loBox.addEventListener('input', fromBoxes);
+      hiBox.addEventListener('input', fromBoxes);
+      fromBoxes();
+    });
 
     document.querySelectorAll('.hist-toggle').forEach((radio) => {
       radio.addEventListener('change', () => {
