@@ -302,6 +302,27 @@
         </section>
       {% endif %}
 
+      {% if history %}
+        <section class="result-card bg-white p-3 p-md-4 mt-4">
+          <h2 class="h4">History</h2>
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead><tr><th>When</th><th>Type</th><th>Item</th><th></th></tr></thead>
+              <tbody>
+                {% for entry in history %}
+                  <tr>
+                    <td class="text-nowrap small text-secondary">{{ entry.created_at }}</td>
+                    <td class="text-nowrap">{{ entry.kind_label }}</td>
+                    <td>{{ entry.title }}</td>
+                    <td><a href="{{ url_for('view_history', entry_id=entry.id) }}">View</a></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      {% endif %}
+
       {% if tracks %}
         <div class="result-card bg-white p-3 p-md-4 mt-4">
           <h2 class="h4">Playlist contents</h2>

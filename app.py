@@ -1,11 +1,14 @@
 import csv
 import io
+import json
 import os
 import random
 import re
+import sqlite3
 import string
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 
 from flask import Flask, redirect, render_template, request, send_file, session, url_for
 import requests
@@ -41,6 +44,117 @@ LASTFM_TAG_CACHE = {}
 MAX_LIBRARY_TAG_ANALYSIS = 40
 ARTIST_GENRE_CACHE = {}
 ARTIST_BATCH_SIZE = 50  # Spotify's several-artists endpoint accepts up to 50 ids.
+HISTORY_DB_PATH = os.getenv(
+    "HISTORY_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.db"),
+)
+HISTORY_KIND_LABELS = {
+    "analysis": "Library analysis",
+    "playlist": "Playlist",
+    "track": "Track features",
+    "random": "Random song",
+}
+
+
+def history_db():
+    connection = sqlite3.connect(HISTORY_DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            ref TEXT,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )"""
+    )
+    return connection
+
+
+def save_history(user_id, kind, title, payload, ref=None):
+    """Persist a result; history failures must never break the main flow."""
+    if not user_id:
+        return
+    try:
+        with history_db() as connection:
+            connection.execute(
+                "INSERT INTO history (user_id, kind, ref, title, created_at, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    user_id, kind, ref, title,
+                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                    json.dumps(payload),
+                ),
+            )
+    except sqlite3.Error:
+        pass
+
+
+def list_history(user_id, limit=25):
+    if not user_id:
+        return []
+    try:
+        with history_db() as connection:
+            rows = connection.execute(
+                "SELECT id, kind, title, created_at FROM history "
+                "WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [
+        {
+            "id": row["id"],
+            "kind_label": HISTORY_KIND_LABELS.get(row["kind"], row["kind"]),
+            "title": row["title"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def find_history(user_id, kind, ref):
+    """Return the latest saved payload for a user/kind/ref, or None."""
+    if not user_id or not ref:
+        return None
+    try:
+        with history_db() as connection:
+            row = connection.execute(
+                "SELECT payload FROM history WHERE user_id = ? AND kind = ? AND ref = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id, kind, ref),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return json.loads(row["payload"]) if row else None
+
+
+def get_history(user_id, entry_id):
+    if not user_id:
+        return None
+    try:
+        with history_db() as connection:
+            row = connection.execute(
+                "SELECT kind, payload FROM history WHERE user_id = ? AND id = ?",
+                (user_id, entry_id),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return {"kind": row["kind"], "payload": json.loads(row["payload"])} if row else None
+
+
+def current_user_id(sp):
+    """Spotify user id for history scoping, cached in the session."""
+    user_id = session.get("spotify_user_id")
+    if not user_id and sp:
+        try:
+            user_id = (sp.me() or {}).get("id")
+        except (SpotifyException, requests.RequestException):
+            return None
+        session["spotify_user_id"] = user_id
+    return user_id
 
 
 def get_spotify_oauth():
@@ -690,8 +804,13 @@ def tracks_to_csv_bytes(tracks):
 
 
 def render_home(**context):
+    logged_in = session.get("token_info") is not None
+    history = []
+    if logged_in:
+        history = list_history(current_user_id(get_spotify_client()))
     defaults = {
-        "logged_in": session.get("token_info") is not None,
+        "logged_in": logged_in,
+        "history": history,
         "message": None,
         "error": None,
         "playlist_url": None,
@@ -890,11 +1009,24 @@ def create_playlist_route():
     description = f"Created from {source} songs" + (f" for: {label}" if label else "")
     playlist = create_playlist(sp, selected, playlist_name, description)
     session["csv_data"] = tracks_to_csv_bytes(selected).decode("utf-8")
+    message = (
+        f"Created “{playlist_name}” with {len(selected)} of {count} requested songs "
+        f"after checking {len(checked_ids)} candidates and using {retries_used} replacement round(s)."
+    )
+    save_history(
+        current_user_id(sp), "playlist", playlist_name,
+        {
+            "message": message,
+            "playlist_url": playlist["external_urls"]["spotify"],
+            "filtered_count": len(filtered),
+            "selected_count": len(selected),
+            "tracks": selected,
+            "playlist_stats": playlist_stats,
+        },
+        ref=playlist.get("id"),
+    )
     return render_home(
-        message=(
-            f"Created “{playlist_name}” with {len(selected)} of {count} requested songs "
-            f"after checking {len(checked_ids)} candidates and using {retries_used} replacement round(s)."
-        ),
+        message=message,
         playlist_url=playlist["external_urls"]["spotify"],
         show_download=True,
         filtered_count=len(filtered),
@@ -949,6 +1081,11 @@ def find_obscure_song():
         feature_rows = display_audio_features(get_reccobeats_audio_features(track["id"]))
     except RuntimeError as exc:
         feature_error = str(exc)
+    save_history(
+        current_user_id(sp), "random", track["name"],
+        {"random_track": track, "obscure_audio_features": feature_rows},
+        ref=track.get("id"),
+    )
     return render_home(
         error=feature_error,
         random_track=track,
@@ -978,11 +1115,17 @@ def analyze_liked():
         {"title": "Valence", "rows": build_histogram(feature_values("valence"), 0.1, decimals=1, max_value=1)},
         {"title": "Acousticness", "rows": build_histogram(feature_values("acousticness"), 0.1, decimals=1, max_value=1)},
     ]
-    return render_home(library_analysis={
+    library_analysis = {
         "total": len(tracks),
         "featured": len(featured),
         "histograms": [entry for entry in histograms if entry["rows"]],
-    })
+    }
+    save_history(
+        current_user_id(sp), "analysis",
+        f"Library analysis · {len(tracks)} songs",
+        {"library_analysis": library_analysis},
+    )
+    return render_home(library_analysis=library_analysis)
 
 
 @app.route("/track_audio_features", methods=["POST"])
@@ -993,6 +1136,13 @@ def track_audio_features():
     track_id = spotify_track_id(request.form.get("track_link"))
     if not track_id:
         return render_home(error="Enter a valid Spotify track link, URI, or 22-character track ID.")
+    user_id = current_user_id(sp)
+    saved = find_history(user_id, "track", track_id)
+    if saved:
+        return render_home(
+            audio_track=saved["audio_track"],
+            audio_features=saved["audio_features"],
+        )
     try:
         track = track_from_spotify(sp.track(track_id))
         features = get_reccobeats_audio_features(track_id)
@@ -1000,11 +1150,52 @@ def track_audio_features():
         return render_home(error=f"Spotify could not load that track: {exc.msg or 'check the link and try again.'}")
     except RuntimeError as exc:
         return render_home(error=str(exc))
-    return render_home(
-        message=f"Loaded ReccoBeats audio features for “{track['name']}”.",
-        audio_track=track,
-        audio_features=display_audio_features(features),
+    feature_rows = display_audio_features(features)
+    save_history(
+        user_id, "track", track["name"],
+        {"audio_track": track, "audio_features": feature_rows},
+        ref=track_id,
     )
+    return render_home(
+        audio_track=track,
+        audio_features=feature_rows,
+    )
+
+
+@app.route("/history/<int:entry_id>")
+def view_history(entry_id):
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("login"))
+    entry = get_history(current_user_id(sp), entry_id)
+    if not entry:
+        return render_home(error="That history entry was not found.")
+    payload = entry["payload"]
+    if entry["kind"] == "playlist":
+        tracks = payload.get("tracks") or []
+        session["csv_data"] = tracks_to_csv_bytes(tracks).decode("utf-8")
+        return render_home(
+            message=payload.get("message"),
+            playlist_url=payload.get("playlist_url"),
+            show_download=bool(tracks),
+            filtered_count=payload.get("filtered_count"),
+            selected_count=payload.get("selected_count"),
+            tracks=tracks,
+            playlist_stats=payload.get("playlist_stats"),
+        )
+    if entry["kind"] == "analysis":
+        return render_home(library_analysis=payload.get("library_analysis"))
+    if entry["kind"] == "track":
+        return render_home(
+            audio_track=payload.get("audio_track"),
+            audio_features=payload.get("audio_features"),
+        )
+    if entry["kind"] == "random":
+        return render_home(
+            random_track=payload.get("random_track"),
+            obscure_audio_features=payload.get("obscure_audio_features"),
+        )
+    return render_home(error="That history entry could not be displayed.")
 
 
 @app.route("/download_csv")
