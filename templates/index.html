@@ -116,21 +116,23 @@
                   <label class="form-label" for="num-tracks">Songs</label>
                   <input class="form-control" id="num-tracks" name="num_tracks" type="number" min="1" max="500" value="20" required>
                 </div>
-                <div class="col-sm-4">
-                  <label class="form-label" for="target-bpm">Target BPM</label>
-                  <input class="form-control" id="target-bpm" name="target_bpm" type="number" min="30" max="250" step="1" placeholder="any">
-                </div>
-                <div class="col-sm-4">
-                  <label class="form-label" for="bpm-tolerance">BPM ±</label>
-                  <input class="form-control" id="bpm-tolerance" name="bpm_tolerance" type="number" min="0" max="100" value="5">
-                </div>
-              </div>
-              <div class="mb-3">
-                {{ range_filter('Popularity', 'popularity', 0, 100, 1) }}
               </div>
               <details class="mb-3">
-                <summary class="form-label">Audio feature filters</summary>
+                <summary class="form-label">Advanced filters</summary>
+                <div class="row g-3 mt-0 mb-1">
+                  <div class="col-sm-6">
+                    <label class="form-label" for="target-bpm">Target BPM</label>
+                    <input class="form-control" id="target-bpm" name="target_bpm" type="number" min="30" max="250" step="1" placeholder="any">
+                  </div>
+                  <div class="col-sm-6">
+                    <label class="form-label" for="bpm-tolerance">BPM ±</label>
+                    <input class="form-control" id="bpm-tolerance" name="bpm_tolerance" type="number" min="0" max="100" value="5">
+                  </div>
+                </div>
                 <div class="row g-3 mt-0">
+                  <div class="col-12">
+                    {{ range_filter('Popularity', 'popularity', 0, 100, 1) }}
+                  </div>
                   {% for feature in ['danceability', 'energy', 'valence', 'acousticness', 'instrumentalness', 'liveness', 'speechiness'] %}
                     <div class="col-12">
                       {{ range_filter(feature, feature, 0, 1, 0.05) }}
@@ -166,12 +168,12 @@
               </fieldset>
               <div class="row g-3 mb-3">
                 <div class="col-sm-6">
-                  <label class="form-label" for="min-popularity">Minimum popularity</label>
-                  <input class="form-control" id="min-popularity" name="min_popularity" type="number" min="0" max="100" step="1" value="0" required>
+                  <label class="form-label" for="finder-min-popularity">Minimum popularity</label>
+                  <input class="form-control" id="finder-min-popularity" name="min_popularity" type="number" min="0" max="100" step="1" value="0" required>
                 </div>
                 <div class="col-sm-6">
-                  <label class="form-label" for="max-popularity">Maximum popularity</label>
-                  <input class="form-control" id="max-popularity" name="max_popularity" type="number" min="0" max="100" step="1" value="100" required>
+                  <label class="form-label" for="finder-max-popularity">Maximum popularity</label>
+                  <input class="form-control" id="finder-max-popularity" name="max_popularity" type="number" min="0" max="100" step="1" value="100" required>
                 </div>
               </div>
               <button class="btn btn-dark btn-lg w-100" type="submit">Find a random song</button>
