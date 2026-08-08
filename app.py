@@ -39,6 +39,8 @@ LASTFM_API_KEY = os.getenv("LASTFM_API_KEY")
 LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_TAG_CACHE = {}
 MAX_LIBRARY_TAG_ANALYSIS = 40
+ARTIST_GENRE_CACHE = {}
+ARTIST_BATCH_SIZE = 50  # Spotify's several-artists endpoint accepts up to 50 ids.
 
 
 def get_spotify_oauth():
@@ -244,6 +246,38 @@ def add_lastfm_tags(tracks, lookup_limit=MAX_LIBRARY_TAG_ANALYSIS):
     return tracks
 
 
+def add_artist_genres(sp, tracks):
+    """Merge Spotify's own artist genres into each track's genre list.
+
+    One request covers 50 artists, so a whole library resolves in a handful
+    of calls — far broader coverage than the capped per-track tag lookups.
+    Small artists often have empty genre arrays, so Last.fm tags stay in the
+    list as a complement rather than being replaced.
+    """
+    artist_ids = [aid for track in tracks for aid in track.get("artist_ids", [])]
+    pending = [aid for aid in dict.fromkeys(artist_ids) if aid not in ARTIST_GENRE_CACHE]
+    try:
+        for start in range(0, len(pending), ARTIST_BATCH_SIZE):
+            chunk = pending[start:start + ARTIST_BATCH_SIZE]
+            response = sp.artists(chunk) or {}
+            for artist in response.get("artists", []):
+                if artist and artist.get("id"):
+                    ARTIST_GENRE_CACHE[artist["id"]] = [
+                        genre.lower() for genre in artist.get("genres", [])
+                    ]
+    except (SpotifyException, requests.RequestException):
+        pass  # Genres stay tag-only when artist lookups are unavailable.
+
+    for track in tracks:
+        merged = list(track.get("genres", []))
+        for aid in track.get("artist_ids", []):
+            for genre in ARTIST_GENRE_CACHE.get(aid, []):
+                if genre not in merged:
+                    merged.append(genre)
+        track["genres"] = merged
+    return tracks
+
+
 def add_audio_features(sp, tracks):
     """Add BPM where Spotify still grants audio-features access.
 
@@ -444,29 +478,42 @@ def get_liked_tracks(sp):
 
 def search_catalog(sp, keywords, desired_count, market=None, search_round=0, include_tags=True):
     """Collect a varied catalog candidate pool using Spotify Search."""
-    query = " ".join(keywords).strip()
+    text_query = " ".join(keywords).strip()
     candidates = {}
     attempts = max(3, min(10, (desired_count + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE + 1))
     for attempt in range(attempts):
-        # A short random prefix gives the random option different results each run.
-        search_query = query or random.choice(string.ascii_lowercase)
+        if keywords:
+            # The genre field filter matches Spotify's artist genre taxonomy
+            # instead of free text. Rotating through the keywords keeps
+            # multi-keyword pools varied across attempts and rounds.
+            keyword = keywords[(search_round + attempt) % len(keywords)]
+            queries = [f'genre:"{keyword.lower()}"', text_query]
+        else:
+            # A short random prefix gives the random option different results each run.
+            queries = [random.choice(string.ascii_lowercase)]
         offset = (
             random.randint(0, 99) * SEARCH_PAGE_SIZE
-            if not query
+            if not text_query
             else (search_round * attempts + attempt) * SEARCH_PAGE_SIZE
         )
-        try:
-            response = sp.search(
-                q=search_query,
-                type="track",
-                limit=SEARCH_PAGE_SIZE,
-                offset=offset,
-                market=market,
-            )
-        except SpotifyException:
-            # Some catalogs have fewer than the chosen random offset; retry page 1.
-            response = sp.search(q=search_query, type="track", limit=SEARCH_PAGE_SIZE, offset=0, market=market)
-        items = response.get("tracks", {}).get("items", [])
+        items = []
+        # Keywords outside Spotify's genre taxonomy return nothing from the
+        # genre filter, so free text remains the fallback query.
+        for search_query in queries:
+            try:
+                response = sp.search(
+                    q=search_query,
+                    type="track",
+                    limit=SEARCH_PAGE_SIZE,
+                    offset=offset,
+                    market=market,
+                )
+            except SpotifyException:
+                # Some catalogs have fewer than the chosen random offset; retry page 1.
+                response = sp.search(q=search_query, type="track", limit=SEARCH_PAGE_SIZE, offset=0, market=market)
+            items = response.get("tracks", {}).get("items", [])
+            if items:
+                break
         for item in items:
             track = track_from_spotify(item)
             if track["id"]:
@@ -474,7 +521,9 @@ def search_catalog(sp, keywords, desired_count, market=None, search_round=0, inc
         if not items or len(candidates) >= desired_count:
             break
     tracks = list(candidates.values())
-    return add_lastfm_tags(tracks) if include_tags and LASTFM_API_KEY else tracks
+    if include_tags and LASTFM_API_KEY:
+        add_lastfm_tags(tracks)
+    return add_artist_genres(sp, tracks) if include_tags else tracks
 
 
 def matches_keywords(track, keywords):
@@ -483,7 +532,12 @@ def matches_keywords(track, keywords):
     haystack = " ".join([
         track["name"], *track["artists"], track["album"], *track.get("genres", [])
     ]).lower()
-    return any(keyword.lower() in haystack for keyword in keywords)
+    # Boundaries treat hyphens as part of the word, so "pop" no longer
+    # matches "k-pop" or "synth-pop" while "pop punk" and "art pop" still do.
+    return any(
+        re.search(rf"(?<![\w-]){re.escape(keyword.lower().strip())}(?![\w-])", haystack)
+        for keyword in keywords
+    )
 
 
 def choose_tracks(tracks, count):
@@ -596,6 +650,9 @@ def create_playlist_route():
         all_liked_tracks = get_liked_tracks(sp)
         random.shuffle(all_liked_tracks)
         add_lastfm_tags(all_liked_tracks)
+        # Artist genres cover the whole library in a few batched requests,
+        # so keyword filtering is not limited to the capped tag sample.
+        add_artist_genres(sp, all_liked_tracks)
         liked_candidates = [track for track in all_liked_tracks if matches_keywords(track, keywords)]
 
         # Batch feature lookups cover 40 songs per request; the cap keeps the
